@@ -3096,7 +3096,7 @@ fi
 # --- dark-factory forge slot gate (#2038, #2362) ---
 # The host-wide forge-subprocess semaphore (dark-factory/lib/forge-slot.sh): acquire/release/fail-open, a K-holder
 # concurrent load, the run-invariant-hunt.sh wiring, and #2362's cases (the same as tools/test-llm-session-slot.sh
-# 10-35): ownership by the exclusive create of slot-N/pid, never by mkdir's exit status; reclaim never removes a newer
+# 10-43): ownership by the exclusive create of slot-N/pid, never by mkdir's exit status; reclaim never removes a newer
 # holder's stamp; an empty stamp or token is dead only when no live creator claims it; a failed stamp write and a
 # SIGKILLed reclaimer never leak a slot. bash only, no forge, no network (~50 s: two cases wait out a 12-13 s budget).
 if [ -x "$REPO_ROOT/dark-factory/demo-forge-slot.sh" ]; then
@@ -3133,27 +3133,17 @@ if [ -f "$slot_lss" ] && [ -f "$slot_fss" ]; then
 fi
 
 # --- slot gate reads are builtin (#2362) ---
-# A stamp, claim or reap token is read only by the libraries' builtin `_lss_read` / `_fss_read`: a command
-# substitution or an external `cat` that fails (fork or exec failure, a missing binary) would read as an empty file and
-# could evict a live holder. Fail on any `cat` and on any command substitution other than the two that resolve the
-# pool path, in the code lines (comments dropped) of both libraries.
+# A stamp, claim or reap token is read only by the libraries' builtin `_lss_read` / `_fss_read`, and no decision rests
+# on an external binary's output or exit status. tools/check-slot-reads.sh is an allowlist: every command word must be
+# a shell keyword/builtin, a function of the library, or mkdir/rm/rmdir/sleep/chmod; `read` and input redirections appear only
+# on the pinned helper lines; no pipelines, backticks, process substitution or command substitution beyond the two
+# pool-path lines; the read helper's body is pinned. tools/test-check-slot-reads.sh proves each bypass is caught.
 if [ -f "$slot_lss" ] && [ -f "$slot_fss" ]; then
-    slot_reads_bad=""
-    for slot_f in "$slot_lss" "$slot_fss"; do
-        # shellcheck disable=SC2016  # literal source text, nothing to expand
-        slot_hits="$(grep -nE '\$\([^(]|`|(^|[^[:alnum:]_])cat([^[:alnum:]_]|$)' "$slot_f" \
-            | grep -vE '^[0-9]+:[[:space:]]*#' \
-            | grep -vE '^[0-9]+:[[:space:]]*_[lf]ss_dir="\$\(_(llm|forge)_slots_dir\)"$' \
-            | grep -vE '^[0-9]+:[[:space:]]*printf .%s. "\$\(cd "\$COLONY_DIR/\.\." && pwd\)/\.agentis/llm-slots"$' || true)"
-        [ -z "$slot_hits" ] || slot_reads_bad="$slot_reads_bad
-${slot_f#"$REPO_ROOT"/}:
-$slot_hits"
-    done
-    if [ -z "$slot_reads_bad" ]; then
+    if slot_reads_out="$(bash "$REPO_ROOT/tools/check-slot-reads.sh" "$slot_lss" "$slot_fss" 2>&1)"; then
         pass "slot gates: stamps, claims and reap tokens are read only by the builtin read (#2362)"
     else
-        fail "slot gates: a stamp, claim or token read goes through cat or a command substitution (#2362)"
-        printf '%s\n' "$slot_reads_bad" | head -20
+        fail "slot gates: a read or decision bypasses the builtin read helper (#2362)"
+        printf '%s\n' "$slot_reads_out" | head -20
     fi
 fi
 

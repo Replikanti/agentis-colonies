@@ -822,7 +822,7 @@ mut "drop DEEP_HUNT_RESUME=0 in the collect pass" lib/deep-hunt-sched.sh \
 ' '' t4_timeout "$MRZH"
 # The pre-#2362 ownership test: whoever's mkdir exits 0 owns the slot and overwrites the stamp.
 mut "slot ownership by mkdir exit status" ../tools/lib/llm-session-slot.sh \
-  "mkdir \"\$_lss_slot\" 2>/dev/null || :
+  "mkdir -m 0700 \"\$_lss_slot\" 2>/dev/null || :
             _lss_create \"\$_lss_slot/pid\"" \
   "if mkdir \"\$_lss_slot\" 2>/dev/null; then printf '%s' \"\$\$\" > \"\$_lss_slot/pid\"; _lss_rc=won; else _lss_rc=lost; fi" \
   s1l_run "$MRZH"

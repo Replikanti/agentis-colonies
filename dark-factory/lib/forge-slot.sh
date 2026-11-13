@@ -40,8 +40,12 @@
 # this version.
 #
 # TRUST BOUNDARY: the pool dir must be owned by the user running the hunts.
-# noclobber only refuses an existing REGULAR file, so a `pid` replaced by a
-# symlink to a device or by a FIFO is outside what this lock defends against.
+# The gate creates the pool and slot dirs 0700 and its files 0600 whatever the
+# caller's umask, and repairs once an entry it does not create (a symlink,
+# FIFO, device or stray file at a stamp, token, claim or slot path; a mode
+# that locks the owner out). An entry it cannot repair costs that one slot.
+# Only another process of the same user swapping such an entry in between a
+# check and an open is outside what this lock defends against.
 #
 # USAGE (source, then bracket the forge subprocess call):
 #   . "<dir>/lib/forge-slot.sh"
@@ -90,7 +94,10 @@ acquire_forge_slot() {
     _fss_wait="${FORGE_SLOT_WAIT_S:-300}"
     case "$_fss_wait" in ''|*[!0-9]*) _fss_wait=300 ;; esac
     _fss_dir="$(_forge_slots_dir)"
-    mkdir -p "$_fss_dir" 2>/dev/null || { FORGE_SLOT_HELD=""; return 0; }
+    # 0700 whatever the caller's umask: the pool and its kept slot dirs must
+    # stay usable by every later acquirer of this user.
+    # shellcheck disable=SC2174  # only the pool dir itself needs 0700
+    mkdir -p -m 0700 "$_fss_dir" 2>/dev/null || { FORGE_SLOT_HELD=""; return 0; }
 
     _fss_waited=0
     while :; do
@@ -100,8 +107,23 @@ acquire_forge_slot() {
             _fss_slot="$_fss_dir/slot-$_fss_i"
             # Container only: its exit status is ignored on purpose (#2362,
             # see MECHANISM) — the exclusive create below decides ownership.
-            mkdir "$_fss_slot" 2>/dev/null || :
+            mkdir -m 0700 "$_fss_slot" 2>/dev/null || :
             _fss_create "$_fss_slot/pid"
+            if [ "$_fss_rc" = cfail ] || [ "$_fss_rc" = wfail ]; then
+                # Refused: maybe an entry left unusable by an earlier run or
+                # another version (a restrictive umask, a stray file). Repair
+                # once and retry once; rm's and chmod's statuses decide nothing
+                # (chmod fails harmlessly on entries we do not own), the create
+                # does.
+                # A non-directory at the slot path (a stray file, a symlink) is
+                # removed once and the slot dir created again.
+                if [ -h "$_fss_slot" ] || { [ -e "$_fss_slot" ] && [ ! -d "$_fss_slot" ]; }; then
+                    rm -f "$_fss_slot" 2>/dev/null || :
+                    mkdir -m 0700 "$_fss_slot" 2>/dev/null || :
+                fi
+                chmod u+rwx "$_fss_dir" "$_fss_slot" 2>/dev/null || :
+                _fss_create "$_fss_slot/pid"
+            fi
             if [ "$_fss_rc" = won ]; then
                 # Won the slot; the PID stamp lets a future acquirer reclaim
                 # it if we die without releasing. Reap tokens and claims left
@@ -121,15 +143,14 @@ acquire_forge_slot() {
                 _fss_refused=$((_fss_refused + 1))
             else
                 # Occupied — reclaim if the holder is dead (crash-safety). An
-                # empty stamp (the builtin size test, never a read that came
-                # back empty) is dead only when no live process claims it
-                # (its creator died between create and write). A stamp that
-                # is not empty but reads as nothing is unreadable: its holder
-                # counts as live.
-                _fss_read "$_fss_slot/pid"
+                # empty stamp is dead only when _fss_dead_empty proves it on
+                # one pinned instance (its creator died between create and
+                # write). A stamp that is not empty but reads as nothing is
+                # unreadable: its holder counts as live.
+                _fss_read_stamp "$_fss_slot/pid"
                 if [ -n "$_fss_val" ]; then
                     _fss_reclaim "$_fss_slot" "$_fss_val"
-                elif [ -f "$_fss_slot/pid" ] && [ ! -s "$_fss_slot/pid" ] && _fss_unclaimed "$_fss_slot/pid"; then
+                elif _fss_dead_empty "$_fss_slot/pid"; then
                     _fss_reclaim "$_fss_slot" ""
                 fi
             fi
@@ -158,18 +179,74 @@ acquire_forge_slot() {
 # FILE's first line, or "" when FILE is missing, empty or unreadable (the reset
 # matters: a failed redirection leaves the variable untouched). Callers decide
 # on the value, never on read's status: a file without a trailing newline
-# returns 1 but is still read. Whether a file is empty is decided only by the
-# builtin `[ -s ]`, so "" from a non-empty file means unreadable, never empty.
+# returns 1 but is still read. _fss_rs is 0 only when a whole line was read.
+# Whether a file is empty is decided only by the builtin `[ -s ]`, so "" from a
+# non-empty file means unreadable, never empty (but see _fss_read_stamp).
 _fss_read() {
     _fss_val=""
-    { IFS= read -r _fss_val < "$1"; } 2>/dev/null || :
+    _fss_rs=1
+    { IFS= read -r _fss_val < "$1" && _fss_rs=0; } 2>/dev/null || :
+}
+
+# _fss_read_repair FILE: _fss_read, and if a non-empty FILE reads as nothing,
+# give the owner read permission once (a stamp written under a restrictive
+# umask by an earlier run or another version) and read again. chmod's status
+# decides nothing; the second read does.
+_fss_read_repair() {
+    _fss_read "$1"
+    if [ -z "$_fss_val" ] && [ -s "$1" ]; then
+        chmod u+r "$1" 2>/dev/null || :
+        _fss_read "$1"
+    fi
+}
+
+# _fss_read_stamp FILE: read a stamp or reap token for a liveness decision.
+# The gate writes `printf '%s' "$$"`, never a newline, so a first line that
+# reads as empty with read's status 0 is content the gate did not write: it
+# becomes the value `blank-line`, which is not a PID and is reaped through tag
+# `invalid`. A read that failed (status non-zero) still gives "" and counts as
+# unreadable, so a failed read never makes a stamp dead.
+_fss_read_stamp() {
+    _fss_read_repair "$1"
+    if [ -z "$_fss_val" ] && [ "$_fss_rs" = 0 ]; then
+        _fss_val=blank-line
+    fi
+}
+
+# _fss_dead_empty FILE: succeed only when FILE is an empty regular file whose
+# creator is dead, proven on one file instance. The steps and their order:
+#   1. Pin the instance now at FILE on fd 4 (a compound-command redirection;
+#      a failed open just fails the test, it never exits the shell).
+#   2. Scan the claims: no FILE.c.<pid>.<n> names a live process. A creator's
+#      claim exists from before its create until after its write, so...
+#   3. ...the pinned instance still being empty (its size read through the
+#      fd, so a later unlink or rebind of the path cannot change the answer)
+#      means its creator died before writing: a live creator either still had
+#      its claim at step 2 or had written before step 3.
+#   4. FILE still names the pinned instance (-ef), so the caller's removal
+#      that follows acts on the instance judged here. Between this test and
+#      that removal nothing else can unlink an empty, dead-creator stamp:
+#      only the owner of the reap token of tag `empty` removes such a stamp,
+#      and that token is held by the caller (see _fss_reclaim).
+# Without /dev/fd the instance cannot be pinned, and the answer is "not dead"
+# (fail safe: no reclaim). Callers run under `set -e`; this is only ever used
+# as a condition.
+# shellcheck disable=SC2094  # fd 4 only reads FILE; 2>/dev/null is the only write
+_fss_dead_empty() {
+    _fss_de=no
+    {
+        if [ -f /dev/fd/4 ] && _fss_unclaimed "$1" && [ ! -s /dev/fd/4 ] && [ /dev/fd/4 -ef "$1" ]; then
+            _fss_de=yes
+        fi
+    } 4< "$1" 2>/dev/null || :
+    [ "$_fss_de" = yes ]
 }
 
 # _fss_mine FILE: succeed when FILE holds our PID. A non-empty FILE that reads
 # as nothing is read once more; if it is still unreadable it is not ours to
 # remove (see release_forge_slot).
 _fss_mine() {
-    _fss_read "$1"
+    _fss_read_repair "$1"
     if [ -z "$_fss_val" ] && [ -s "$1" ]; then
         _fss_read "$1"
     fi
@@ -177,58 +254,115 @@ _fss_mine() {
 }
 
 # _fss_create FILE: the one exclusivity primitive, used for stamps and reap
-# tokens. First a claim FILE.c.<our PID> (a plain create of our own name, no
-# data), then FILE itself only if it does not exist yet (`set -C`:
+# tokens. First a claim (_fss_claim: FILE.c.<our PID>.<n>, a name no other
+# process uses), then FILE itself only if it does not exist yet (`set -C`:
 # O_CREAT|O_EXCL in bash and dash), with our PID written through that same
 # descriptor. The claim covers the moment FILE exists but is still empty: an
-# empty FILE is dead only when no claim names a live PID (_fss_unclaimed), so a
-# live creator is never declared dead, however long it stalls. Sets _fss_rc:
+# empty FILE is dead only when no claim names a live PID (_fss_dead_empty), so
+# a live creator is never declared dead, however long it stalls. Sets _fss_rc:
 #   won    FILE created and stamped (claim removed)
 #   lost   FILE existed (claim removed)
 #   wfail  FILE created but the write failed: FILE removed, then the claim
-#   cfail  the claim could not be created, twice (the dir is re-created in
-#          between); nothing was attempted. Slot dirs are never removed by this
-#          library (see release_forge_slot), so that means a refusing filesystem.
-# `true` (a regular builtin) carries the claim redirection, because a failed
-# redirection on the special builtin `:` would exit the subshell before
-# `exit 4`. A failed redirection exits 1 (bash) or 2 (dash), never 3 or 4.
+#   cfail  no claim could be created, or FILE is an entry the gate never
+#          creates; after one repair (below) and one more attempt. Slot dirs
+#          are never removed by this library (see release_forge_slot), so a
+#          cfail that survives the repair means a refusing filesystem or an
+#          entry we cannot remove.
+# A failed redirection exits 1 (bash) or 2 (dash), never 3.
 _fss_create() {
     _fss_try=1
     while :; do
-        if ( true > "$1.c.$$" || exit 4; set -C; { printf '%s' "$$" >&3 || exit 3; } 3> "$1" ) 2>/dev/null; then
+        _fss_cl=""
+        if _fss_odd "$1"; then
+            # Never open an entry the gate does not create: noclobber refuses
+            # only an existing regular file, so a symlink there would let every
+            # acquirer "win" and a FIFO would block the open forever.
+            _fss_rc=cfail
+        elif ! _fss_claim "$1"; then
+            _fss_rc=cfail
+        elif ( umask 077; set -C; { printf '%s' "$$" >&3 || exit 3; } 3> "$1" ) 2>/dev/null; then
             _fss_rc=won
+            # A win must leave a regular file that reads back our PID; an
+            # entry swapped in under us is not a slot we hold.
+            _fss_read "$1"
+            if _fss_odd "$1" || [ "$_fss_val" != "$$" ]; then
+                _fss_rc=cfail
+            fi
         else
             case $? in
                 3) _fss_rc=wfail ;;
-                4) _fss_rc=cfail ;;
                 *) _fss_rc=lost ;;
             esac
+        fi
+        if [ "$_fss_rc" = wfail ]; then
+            rm -f "$1" 2>/dev/null || :
+        fi
+        if [ -n "$_fss_cl" ]; then
+            rm -f "$_fss_cl" 2>/dev/null || :
         fi
         if [ "$_fss_rc" != cfail ] || [ "$_fss_try" -ge 2 ]; then
             break
         fi
-        # The claim's dir can vanish under us only from outside this version
-        # (a pre-#2362 holder's release removes it, or the pool was deleted):
-        # re-create it and decide by one more attempt, never by a re-check.
-        mkdir -p "${1%/*}" 2>/dev/null || :
+        # Repair once, then decide by one more attempt, never by a re-check:
+        # remove an entry the gate never creates (a symlink, FIFO, device or
+        # empty dir: rm -f, else rmdir, never rm -r), and re-create the dir,
+        # which can vanish under us only from outside this version (a
+        # pre-#2362 holder's release removes it, or the pool was deleted).
+        _fss_unodd "$1"
+        # shellcheck disable=SC2174  # only the slot dir itself needs 0700
+        mkdir -p -m 0700 "${1%/*}" 2>/dev/null || :
         _fss_try=2
     done
-    if [ "$_fss_rc" = wfail ]; then
-        rm -f "$1" 2>/dev/null || :
-    fi
-    if [ "$_fss_rc" != cfail ]; then
-        rm -f "$1.c.$$" 2>/dev/null || :
+}
+
+# _fss_claim FILE: create our claim on FILE and name it in _fss_cl. The name is
+# FILE.c.<our PID>.<n> for the first n this process creates exclusively
+# (noclobber): subshells of one shell share $$, and each still gets its own
+# claim, so one never removes a claim another still needs. An existing entry at
+# a candidate name (a sibling's claim, a stale one, anything odd) is skipped,
+# never opened; the walk ends because the dir holds finitely many entries.
+# Fails (cfail) when a create at a free name is refused (missing dir, full or
+# read-only filesystem).
+_fss_claim() {
+    _fss_n=1
+    while :; do
+        _fss_cl="$1.c.$$.$_fss_n"
+        if [ -e "$_fss_cl" ] || [ -h "$_fss_cl" ]; then
+            _fss_n=$((_fss_n + 1))
+        elif ( umask 077; set -C; true > "$_fss_cl" ) 2>/dev/null; then
+            return 0
+        elif [ -e "$_fss_cl" ] || [ -h "$_fss_cl" ]; then
+            _fss_n=$((_fss_n + 1))
+        else
+            _fss_cl=""
+            return 1
+        fi
+    done
+}
+
+# _fss_odd PATH: succeed when PATH is a symlink, or exists and is not a
+# regular file: never an entry the gate creates at a stamp, token or claim.
+_fss_odd() {
+    [ -h "$1" ] || { [ -e "$1" ] && [ ! -f "$1" ]; }
+}
+
+# _fss_unodd PATH: remove PATH once if it is odd (rm -f; an empty dir by
+# rmdir; never rm -r). Statuses decide nothing: the next create does.
+_fss_unodd() {
+    if _fss_odd "$1"; then
+        rm -f "$1" 2>/dev/null || rmdir "$1" 2>/dev/null || :
     fi
 }
 
 # _fss_unclaimed FILE: succeed when no live process claims FILE, i.e. every
-# FILE.c.<pid> names a dead or invalid PID. Under `set -f` the claims cannot be
+# FILE.c.<pid>.<n> names a dead or invalid PID. Under `set -f` the claims cannot be
 # listed, so FILE counts as claimed (never wrongly dead).
 _fss_unclaimed() {
     case $- in *f*) return 1 ;; esac
     for _fss_c in "$1".c.*; do
         if [ -e "$_fss_c" ]; then
             _fss_cp="${_fss_c##*.c.}"
+            _fss_cp="${_fss_cp%%.*}"
             case "$_fss_cp" in
                 '' | *[!0123456789]* | 0* | ??????????*) ;;
                 *) if kill -0 "$_fss_cp" 2>/dev/null; then return 1; fi ;;
@@ -245,6 +379,7 @@ _fss_sweep_claims() {
     for _fss_c in "$1".c.*; do
         if [ -e "$_fss_c" ]; then
             _fss_cp="${_fss_c##*.c.}"
+            _fss_cp="${_fss_cp%%.*}"
             case "$_fss_cp" in
                 '' | *[!0123456789]* | 0* | ??????????*) rm -f "$_fss_c" 2>/dev/null || : ;;
                 *) if ! kill -0 "$_fss_cp" 2>/dev/null; then rm -f "$_fss_c" 2>/dev/null || :; fi ;;
@@ -255,10 +390,19 @@ _fss_sweep_claims() {
 }
 
 # _fss_sweep SLOT PREFIX: remove SLOT's reap tokens (and their claims) named
-# reap.PREFIX*. Only called once SLOT's stamp no longer names the holder those
-# tokens are for, so any reclaim they could still serialize is a no-op.
+# reap.PREFIX*, never those of tag `empty`. Only called once SLOT's stamp no
+# longer names the holder those tokens are for: a PID tag's holder never comes
+# back, so any reclaim they could still serialize is a no-op. An empty stamp,
+# though, can appear again at any time (every creator passes through one), so
+# tag `empty` tokens are never swept: removing a lower generation would let a
+# new reclaimer re-create it while a climber that already passed it holds a
+# higher one, and two `empty` reclaims would run at once. Only the owner of
+# the top `empty` token removes it, after its own reclaim (_fss_reclaim).
 _fss_sweep() {
     for _fss_tok in "$1"/reap."$2"*; do
+        case "${_fss_tok##*/}" in
+            reap.empty.*) continue ;;
+        esac
         if [ -e "$_fss_tok" ]; then
             rm -f "$_fss_tok" 2>/dev/null || :
         fi
@@ -273,20 +417,29 @@ _fss_sweep() {
 #      create ourselves (_fss_create), where every lower generation exists and
 #      belongs to a dead owner (its PID, or for an empty token its claims).
 #      Two reclaimers never both pass: for one g only one create succeeds, and
-#      a climber passes g only after seeing its owner dead. This also takes
-#      over a token whose owner was killed mid-reclaim. Tokens of TAG are only
-#      removed once the stamp no longer names HOLDER, so the set a climber
-#      walks only grows while a reclaim can still act; it is finite, so the
+#      a climber passes g only after seeing its owner dead (an empty token:
+#      _fss_dead_empty on the pinned instance). This also takes over a token
+#      whose owner was killed mid-reclaim. Tokens of a PID tag are only
+#      removed once the stamp no longer names HOLDER, and `empty` tokens only
+#      by their own owner (see _fss_sweep), so the set a climber walks only
+#      grows while a reclaim of that tag can still act; it is finite, so the
 #      climb always ends.
-#   3. Re-check under the token, then act: remove the stamp only if it still
-#      names HOLDER and HOLDER is still dead (a new holder may reuse the PID),
-#      or, for an empty stamp, only if it is still empty and still unclaimed.
-#      Only the token owner may remove it, and no acquirer can replace an
-#      existing file, so the stamp cannot change between the re-check and the
-#      removal, and a reclaimer that read a holder which has since released
-#      never removes the new holder's stamp.
-#   4. The stamp no longer names HOLDER: sweep every token of TAG and the
-#      stamp's dead claims.
+#   3. Re-check under the token, then act.
+#      - A PID stamp: remove it only if it still names HOLDER and HOLDER is
+#        still dead (a new holder may reuse the PID). A non-empty stamp never
+#        changes content, and while it exists no acquirer can create the
+#        path; it is unlinked only by its holder's release (HOLDER is dead) or
+#        by the owner of this tag's token (us). So it cannot change between
+#        this test and the removal.
+#      - An empty stamp: remove it only if _fss_dead_empty proves, on one
+#        pinned instance, that its creator died before writing, and the path
+#        still names that instance. An empty stamp whose creator is dead is
+#        unlinked only by the owner of the `empty` token, which is us, so the
+#        path cannot be rebound between that proof and the removal.
+#      A reclaimer that read a holder which has since released therefore
+#      never removes a new holder's stamp.
+#   4. The stamp no longer names HOLDER: sweep the tag's tokens (for `empty`,
+#      only our own) and the stamp's dead claims.
 # TAG is HOLDER only when it is a positive decimal with no leading zero and at
 # most 9 digits (Linux caps PIDs at 2^22, macOS at 99999); an empty HOLDER is
 # reaped as TAG `empty`, any other content as `invalid`, so garbage never
@@ -316,14 +469,13 @@ _fss_reclaim() {
         if [ "$_fss_rc" != lost ]; then
             return 0
         fi
-        _fss_read "$1/reap.$_fss_tag.$_fss_g"
+        _fss_read_stamp "$1/reap.$_fss_tag.$_fss_g"
         _fss_owner="$_fss_val"
         case "$_fss_owner" in
             '')
-                # Empty (size test) and unclaimed: its owner died between
-                # create and write. Unreadable or claimed: a live owner.
-                if [ -f "$1/reap.$_fss_tag.$_fss_g" ] && [ ! -s "$1/reap.$_fss_tag.$_fss_g" ] \
-                    && _fss_unclaimed "$1/reap.$_fss_tag.$_fss_g"; then
+                # Empty and unclaimed on one pinned instance: its owner died
+                # between create and write. Unreadable or claimed: live.
+                if _fss_dead_empty "$1/reap.$_fss_tag.$_fss_g"; then
                     :
                 else
                     return 0
@@ -338,12 +490,12 @@ _fss_reclaim() {
         esac
         _fss_g=$((_fss_g + 1))
     done
-    _fss_read "$1/pid"
+    _fss_read_stamp "$1/pid"
     _fss_now="$_fss_val"
     _fss_dead=no
     if [ "$_fss_now" = "$2" ]; then
         if [ -z "$2" ]; then
-            if [ -f "$1/pid" ] && [ ! -s "$1/pid" ] && _fss_unclaimed "$1/pid"; then
+            if _fss_dead_empty "$1/pid"; then
                 _fss_dead=yes
             fi
         elif [ "$_fss_tag" != "$2" ] || ! kill -0 "$2" 2>/dev/null; then
@@ -355,7 +507,11 @@ _fss_reclaim() {
     if [ "$_fss_dead" = yes ]; then
         rm -f "$1/pid" 2>/dev/null || :
     fi
-    _fss_sweep "$1" "$_fss_tag."
+    if [ "$_fss_tag" = empty ]; then
+        rm -f "$_FSS_REAP" 2>/dev/null || :
+    else
+        _fss_sweep "$1" "$_fss_tag."
+    fi
     _fss_sweep_claims "$1/pid"
     _FSS_REAP=""
     return 0

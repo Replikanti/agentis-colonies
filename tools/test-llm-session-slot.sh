@@ -14,7 +14,7 @@ ok()   { PASS=$((PASS + 1)); printf '[PASS] %s\n' "$1"; }
 bad()  { FAIL=$((FAIL + 1)); printf '[FAIL] %s\n' "$1"; }
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'chmod -R u+rwx "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
 export AGENTIS_LLM_SLOTS_DIR="$TMP/slots"
 
 LIB="$HERE/lib/llm-session-slot.sh"
@@ -119,7 +119,8 @@ export SLOT_LIAR="$TMP/liar"
 mkdir -p "$SLOT_LIAR"
 printf '#!/bin/sh\n"%s" "$@"\nexit 0\n' "$REAL_MKDIR" > "$SLOT_LIAR/mkdir"
 chmod +x "$SLOT_LIAR/mkdir"
-fresh() { rm -rf "$SLOTS"; mkdir -p "$SLOTS"; }
+# (a library under test may leave owner-locked entries; restore the owner's rights before removing)
+fresh() { chmod -R u+rwx "$SLOTS" 2>/dev/null || true; rm -rf "$SLOTS"; mkdir -p "$SLOTS"; }
 # child CODE — run CODE in a fresh `sh` process (its own PID) that sources the library under `set -eu`, the caller
 # contract; prints CODE's output, then ABORTED if the library (or CODE) made that set -e shell exit non-zero.
 child() { sh -c 'set -eu; . "$1"; eval "$2"' sh "$LIB" "$1" 2>/dev/null || printf 'ABORTED'; }
@@ -385,7 +386,9 @@ fi
 
 # 25. A reclaimer SIGKILLed at each external step of a reclaim (after winning its token, just before removing the
 #     stamp; right after removing it; while sweeping its tokens) never leaks the slot: the next acquirer gets slot-1
-#     and no token is left. A stop-shim for rm on the reclaimer's PATH records its PID and hangs at the named step.
+#     and no token is left. A stop-shim for rm on the reclaimer's PATH records its PID and hangs at the named step
+#     (the sweep point skips the token's own claim cleanup, which runs before the re-check, so it stops in the sweep
+#     that follows the stamp's removal).
 #     (A kill between a token's create and its stamp, inside one builtin redirection, leaves the empty token of
 #     case 22.)
 KSHIM="$TMP/kshim"; mkdir -p "$KSHIM"
@@ -402,6 +405,7 @@ case "$KSTOP_AT:$last" in
         done ;;
     rmstamp:*/pid)
         "$KREAL_RM" "$@"; echo "$$" > "$KSTOP_READY"; exec sleep 60 ;;
+    sweep:*/reap.*.c.*) ;;
     sweep:*/reap.*)
         echo "$$" > "$KSTOP_READY"; exec sleep 60 ;;
 esac
@@ -686,17 +690,17 @@ else
     bad "release with an unreadable stamp: transient='$_r34a' (want freed/), persistent='$_r34b' (want kept/)"
 fi
 
-# 35. A slot entry this user cannot use (here a stray regular file named slot-1) costs one slot, never the cap: at
-#     K=2 the first acquirer takes slot-2 and a second one waits its budget and fails open (max concurrency 1).
-#     Only a pass in which every slot refused fails open at once.
-fresh; : > "$SLOTS/slot-1"
+# 35. A slot entry the gate cannot repair (here a non-empty directory at slot-1/pid: rm -f and rmdir both refuse it)
+#     costs one slot, never the cap: at K=2 the first acquirer takes slot-2 and a second one waits its budget and
+#     fails open (max concurrency 1). Only a pass in which every slot refused fails open at once.
+fresh; mkdir -p "$SLOTS/slot-1/pid/x"
 LLM_MAX_CONCURRENT=2 LLM_SLOT_WAIT_S=1 acquire_llm_slot; _a35="${LLM_SLOT_HELD:-}"
 _t0=$(date +%s)
 # shellcheck disable=SC2016
 _b35="$(child 'LLM_MAX_CONCURRENT=2 LLM_SLOT_WAIT_S=2 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
 _t1=$(date +%s)
 release_llm_slot
-fresh; : > "$SLOTS/slot-1"; : > "$SLOTS/slot-2"
+fresh; mkdir -p "$SLOTS/slot-1/pid/x" "$SLOTS/slot-2/pid/x"
 _t2=$(date +%s)
 # shellcheck disable=SC2016
 _c35="$(child 'LLM_MAX_CONCURRENT=2 LLM_SLOT_WAIT_S=5 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
@@ -706,6 +710,161 @@ if [ "$_a35" = "$SLOTS/slot-2" ] && [ -z "$_b35" ] && [ "$((_t1 - _t0))" -ge 2 ]
     ok "a refused slot entry costs one slot (slot-2 taken, a second acquirer waited $((_t1 - _t0))s); all refused fails open at once"
 else
     bad "refused slot: first='$_a35' second='$_b35' after $((_t1 - _t0))s, all-refused='$_c35' after $((_t3 - _t2))s"
+fi
+
+# 36. The empty-stamp verdict and the removal it leads to act on one file instance. A dead creator's empty stamp;
+#     W reclaims it and re-creates the slot, stalled between create and write (a `printf` hook), then holds 2 s. R (a
+#     copy of the library whose claim scan is wrapped in stalls) judges W's still-empty stamp: its scan runs after W
+#     wrote and dropped its claim, and it then sleeps through W's whole hold and release, while C binds a fresh empty
+#     stamp (stalled the same way). A verdict that re-reads the path (size after scan, without pinning) would now see
+#     C's empty stamp and remove it. Judged on the pinned instance (W's, written), it does not. A probe counts the
+#     holders: never more than 1 at K=1, and W, C and R all hold the slot in turn.
+P36="$TMP/p36"; rm -rf "$P36"; mkdir -p "$P36"
+sed 's/^_lss_unclaimed() {/_lss_unclaimed_real() {/' "$LIB" > "$TMP/rlib36.sh"
+fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"; : > "$SLOTS/slot-1/pid.c.$_dead2"
+# shellcheck disable=SC2016,SC2089,SC2090  # code strings eval'd by the children below
+HOLD36='_hold() { if [ -n "$LLM_SLOT_HELD" ]; then : > "$P36/run.$$"; ls "$P36" | grep -c "^run\." >> "$P36/counts"; echo "$1" >> "$P36/held"; sleep "$2"; rm -f "$P36/run.$$"; fi; release_llm_slot; }'
+# shellcheck disable=SC2016,SC2089,SC2090
+STALL36='printf() { if [ "${2:-}" = "$$" ] && [ -z "${_LSS_REAP:-}" ]; then sleep "$STALL"; fi; command printf "$@"; }'
+# shellcheck disable=SC2090
+export P36 HOLD36 STALL36
+# shellcheck disable=SC2016
+sh -c '. "$1"; eval "$HOLD36"; _n=0
+    _lss_unclaimed() { _n=$((_n + 1)); if [ "$_n" -eq 2 ]; then sleep 3; fi; _lss_unclaimed_real "$@"; _r=$?
+        if [ "$_n" -eq 1 ]; then sleep 2; fi; if [ "$_n" -eq 2 ]; then sleep 4; fi; return "$_r"; }
+    LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=40 acquire_llm_slot; _hold R 3' sh "$TMP/rlib36.sh" >/dev/null 2>&1 &
+_r36=$!
+sleep 0.3
+# shellcheck disable=SC2016
+STALL=3 sh -c '. "$1"; eval "$HOLD36"; eval "$STALL36"
+    LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=40 acquire_llm_slot; _hold W 2' sh "$LIB" >/dev/null 2>&1 &
+_w36=$!
+sleep 5.7
+# shellcheck disable=SC2016
+STALL=6 sh -c '. "$1"; eval "$HOLD36"; eval "$STALL36"
+    LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=40 acquire_llm_slot; _hold C 2' sh "$LIB" >/dev/null 2>&1 &
+_c36=$!
+wait "$_r36" "$_w36" "$_c36" 2>/dev/null || true
+_max36="$(sort -n "$P36/counts" 2>/dev/null | tail -1)"
+_held36="$(sort "$P36/held" 2>/dev/null | tr '\n' ' ')"
+if [ "$_max36" = 1 ] && [ "$_held36" = "C R W " ]; then
+    ok "the empty-stamp verdict is pinned to one instance: a whole hold cycle between scan and size test never doubles the slot"
+else
+    bad "empty-stamp verdict across a hold cycle: max holders='${_max36:-none}' (want 1), held=[$_held36] (want C R W)"
+fi
+
+# 37. A caller's restrictive umask never poisons the pool: an acquire+release under `umask 0177` (which strips the
+#     owner's x bit) leaves slot dirs every later acquirer can use, and entries already left unusable by an earlier
+#     run or another version (mode 0600 dirs) are repaired once and used.
+fresh
+# shellcheck disable=SC2016
+_r37="$(child 'umask 0177; LLM_MAX_CONCURRENT=2 LLM_SLOT_WAIT_S=1 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"; release_llm_slot')"
+LLM_MAX_CONCURRENT=2 LLM_SLOT_WAIT_S=1 acquire_llm_slot; _a37="${LLM_SLOT_HELD:-}"
+# shellcheck disable=SC2016
+_b37="$(child 'LLM_MAX_CONCURRENT=2 LLM_SLOT_WAIT_S=1 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+release_llm_slot
+fresh; mkdir -m 0600 "$SLOTS/slot-1" "$SLOTS/slot-2"
+# shellcheck disable=SC2016
+_c37="$(child 'LLM_MAX_CONCURRENT=2 LLM_SLOT_WAIT_S=1 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+chmod 0700 "$SLOTS/slot-1" "$SLOTS/slot-2" 2>/dev/null || true
+if [ "$_r37" = "$SLOTS/slot-1" ] && [ "$_a37" = "$SLOTS/slot-1" ] && [ "$_b37" = "$SLOTS/slot-2" ] && [ "$_c37" = "$SLOTS/slot-1" ]; then
+    ok "umask 0177 leaves usable slot dirs, and 0600 slot dirs from an earlier run are repaired"
+else
+    bad "restrictive umask: under 0177 '$_r37', later '$_a37' + '$_b37' (want slot-1 + slot-2), over 0600 dirs '$_c37'"
+fi
+
+# 38. A stamp written under `umask 0477` (no owner read) can still be read back, so a crashed holder's slot is
+#     reclaimed; a stamp already left unreadable by an earlier run (mode 0200, dead holder) is repaired once and
+#     reclaimed. Neither leaks the slot.
+fresh
+# shellcheck disable=SC2016
+child 'umask 0477; LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=1 acquire_llm_slot' >/dev/null
+# shellcheck disable=SC2016
+_a38="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=3 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"; chmod 0200 "$SLOTS/slot-1/pid"
+# shellcheck disable=SC2016
+_b38="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=3 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+if [ "$_a38" = "$SLOTS/slot-1" ] && [ "$_b38" = "$SLOTS/slot-1" ]; then
+    ok "a stamp under umask 0477 stays readable (crashed holder reclaimed), and a 0200 stamp is repaired and reclaimed"
+else
+    bad "unreadable stamps: after a 0477 holder crashed '$_a38', over a 0200 dead stamp '$_b38' (want slot-1 both)"
+fi
+
+# 39. A stamp whose first line is empty (here only "\n") is content the gate never writes (it writes the PID with no
+#     newline): it is reaped as `invalid`, not kept as an unreadable live holder.
+fresh; mkdir "$SLOTS/slot-1"; printf '\n' > "$SLOTS/slot-1/pid"
+# shellcheck disable=SC2016
+_r39="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=3 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+if [ "$_r39" = "$SLOTS/slot-1" ]; then
+    ok "a blank-first-line stamp (not written by the gate) is reaped as invalid"
+else
+    bad "blank-first-line stamp: held='$_r39' (want slot-1)"
+fi
+
+# 40. A symlink at the stamp path (here to /dev/null) is never opened: noclobber would let every acquirer "win" it.
+#     It is removed once, the slot gets a real stamp, and at K=1 a second acquirer waits and fails open.
+fresh; mkdir "$SLOTS/slot-1"; ln -s /dev/null "$SLOTS/slot-1/pid"
+LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=1 acquire_llm_slot; _a40="${LLM_SLOT_HELD:-}"
+# shellcheck disable=SC2016
+_b40="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=2 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+_s40="no"; if [ -f "$SLOTS/slot-1/pid" ] && [ ! -h "$SLOTS/slot-1/pid" ] && [ "$(cat "$SLOTS/slot-1/pid" 2>/dev/null)" = "$$" ]; then _s40=yes; fi
+release_llm_slot
+if [ "$_a40" = "$SLOTS/slot-1" ] && [ -z "$_b40" ] && [ "$_s40" = yes ]; then
+    ok "a symlinked stamp path is replaced by a real stamp; a second acquirer at K=1 does not get the slot"
+else
+    bad "symlinked stamp path: first='$_a40' second='$_b40' (want slot-1 then nothing), real stamp=$_s40"
+fi
+
+# 41. A FIFO at the stamp path is never opened (an open would block forever, with no bounded wait): it is removed
+#     once and the acquire takes the slot within its budget.
+fresh; mkdir "$SLOTS/slot-1"; mkfifo "$SLOTS/slot-1/pid"; rm -f "$TMP/r41"
+# shellcheck disable=SC2016
+sh -c '. "$1"; LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=3 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD" > "$2"' sh "$LIB" "$TMP/r41" \
+    >/dev/null 2>&1 &
+_p41=$!
+_n=0
+while [ ! -e "$TMP/r41" ] && [ "$_n" -lt 100 ]; do sleep 0.1; _n=$((_n + 1)); done
+kill "$_p41" 2>/dev/null || true; wait "$_p41" 2>/dev/null || true
+_r41="$(cat "$TMP/r41" 2>/dev/null)" || _r41=""
+if [ "$_r41" = "$SLOTS/slot-1" ]; then
+    ok "a FIFO at the stamp path is removed, not opened: the acquire took slot-1 within its budget"
+else
+    bad "FIFO at the stamp path: acquire result '${_r41:-none, still blocked after 10s}'"
+fi
+
+# 42. A stray non-directory at the slot path is removed once and the slot used, so an explicit K=1 does not turn it
+#     into an all-refused pass (which would fail open and disable the cap).
+fresh; : > "$SLOTS/slot-1"
+# shellcheck disable=SC2016
+_r42="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=2 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+if [ "$_r42" = "$SLOTS/slot-1" ] && [ -d "$SLOTS/slot-1" ]; then
+    ok "a stray file at the slot path is repaired at K=1 (slot taken, no fail-open)"
+else
+    bad "stray file at the slot path, K=1: held='$_r42' (want slot-1)"
+fi
+
+# 43. Subshells of one shell share $$, and each still gets its own claim. S1 (a subshell of this test) is stalled
+#     between its stamp create and its write; S2 (a sibling subshell, same $$) loses to S1's empty stamp and drops its
+#     own claim; R (another process) then judges S1's stamp. S1's claim must still be there, so R never declares the
+#     stamp dead: R fails open and S1 keeps the slot.
+fresh
+(
+    # shellcheck disable=SC2329  # shadows the builtin inside the library's stamp write
+    printf() { if [ "${2:-}" = "$$" ] && [ -z "${_LSS_REAP:-}" ]; then sleep 3; fi; command printf "$@"; }
+    LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=1 acquire_llm_slot
+    echo "${LLM_SLOT_HELD:-}" > "$TMP/s1.held"; sleep 3; release_llm_slot
+) &
+_s143=$!
+sleep 1
+( LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=0 acquire_llm_slot ) || true
+# shellcheck disable=SC2016
+_r43="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=1 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+wait "$_s143" 2>/dev/null || true
+_h43="$(cat "$TMP/s1.held" 2>/dev/null)" || _h43=""
+if [ "$_h43" = "$SLOTS/slot-1" ] && [ -z "$_r43" ]; then
+    ok "sibling subshells (one \$\$) keep separate claims: a sibling's cleanup never exposes the other's empty stamp"
+else
+    bad "shared \$\$: S1 held='$_h43' (want slot-1), R held='$_r43' (want nothing)"
 fi
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
