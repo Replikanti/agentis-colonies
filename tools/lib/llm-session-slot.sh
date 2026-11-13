@@ -98,6 +98,7 @@ acquire_llm_slot() {
     _lss_waited=0
     while :; do
         _lss_i=1
+        _lss_refused=0
         while [ "$_lss_i" -le "$_lss_k" ]; do
             _lss_slot="$_lss_dir/slot-$_lss_i"
             # Container only: its exit status is ignored on purpose (#2362,
@@ -115,23 +116,36 @@ acquire_llm_slot() {
                 return 0
             fi
             if [ "$_lss_rc" != lost ]; then
-                # The pool filesystem refused our claim or our stamp write
-                # (ENOSPC, EDQUOT); _lss_create already undid both. A gate
-                # that cannot write a PID cannot hold: fail open now.
-                return 0
-            fi
-            # Occupied — reclaim if the holder is dead (crash-safety). An
-            # empty stamp is dead only when no live process claims it (its
-            # creator died between create and write).
-            _lss_holder="$(cat "$_lss_slot/pid" 2>/dev/null)" || _lss_holder=""
-            if [ -n "$_lss_holder" ]; then
-                _lss_reclaim "$_lss_slot" "$_lss_holder"
-            elif [ -f "$_lss_slot/pid" ] && _lss_unclaimed "$_lss_slot/pid"; then
-                _lss_reclaim "$_lss_slot" ""
+                # This slot refused our claim or our stamp write (a full or
+                # read-only filesystem, or a slot entry we cannot write: a dir
+                # of another user, a stray file); _lss_create already undid
+                # both. Try the next slot: one bad entry must not disable the
+                # cap. Only a pass in which every slot refused fails open.
+                _lss_refused=$((_lss_refused + 1))
+            else
+                # Occupied — reclaim if the holder is dead (crash-safety). An
+                # empty stamp (the builtin size test, never a read that came
+                # back empty) is dead only when no live process claims it
+                # (its creator died between create and write). A stamp that
+                # is not empty but reads as nothing is unreadable: its holder
+                # counts as live.
+                _lss_read "$_lss_slot/pid"
+                if [ -n "$_lss_val" ]; then
+                    _lss_reclaim "$_lss_slot" "$_lss_val"
+                elif [ -f "$_lss_slot/pid" ] && [ ! -s "$_lss_slot/pid" ] && _lss_unclaimed "$_lss_slot/pid"; then
+                    _lss_reclaim "$_lss_slot" ""
+                fi
             fi
             _lss_i=$((_lss_i + 1))
         done
-        # All K slots held by live holders. Wait, then fail open.
+        if [ "$_lss_refused" -ge "$_lss_k" ]; then
+            # Every slot refused in this pass: the pool cannot hold a stamp
+            # at all (ENOSPC, EDQUOT, EROFS). Fail open now.
+            LLM_SLOT_HELD=""
+            return 0
+        fi
+        # No slot won: each was held by a live holder or refused. Wait, then
+        # fail open.
         if [ "$_lss_waited" -ge "$_lss_wait" ]; then
             LLM_SLOT_HELD=""
             return 0
@@ -139,6 +153,30 @@ acquire_llm_slot() {
         sleep 1
         _lss_waited=$((_lss_waited + 1))
     done
+}
+
+# _lss_read FILE: the one way this library reads a stamp, claim or token: the
+# shell's own `read`, with no command substitution and no external binary, so
+# a failed fork or exec can never pass for an empty file. Sets _lss_val to
+# FILE's first line, or "" when FILE is missing, empty or unreadable (the reset
+# matters: a failed redirection leaves the variable untouched). Callers decide
+# on the value, never on read's status: a file without a trailing newline
+# returns 1 but is still read. Whether a file is empty is decided only by the
+# builtin `[ -s ]`, so "" from a non-empty file means unreadable, never empty.
+_lss_read() {
+    _lss_val=""
+    { IFS= read -r _lss_val < "$1"; } 2>/dev/null || :
+}
+
+# _lss_mine FILE: succeed when FILE holds our PID. A non-empty FILE that reads
+# as nothing is read once more; if it is still unreadable it is not ours to
+# remove (see release_llm_slot).
+_lss_mine() {
+    _lss_read "$1"
+    if [ -z "$_lss_val" ] && [ -s "$1" ]; then
+        _lss_read "$1"
+    fi
+    [ "$_lss_val" = "$$" ]
 }
 
 # _lss_create FILE: the one exclusivity primitive, used for stamps and reap
@@ -281,10 +319,14 @@ _lss_reclaim() {
         if [ "$_lss_rc" != lost ]; then
             return 0
         fi
-        _lss_owner="$(cat "$1/reap.$_lss_tag.$_lss_g" 2>/dev/null)" || _lss_owner=""
+        _lss_read "$1/reap.$_lss_tag.$_lss_g"
+        _lss_owner="$_lss_val"
         case "$_lss_owner" in
             '')
-                if [ -f "$1/reap.$_lss_tag.$_lss_g" ] && _lss_unclaimed "$1/reap.$_lss_tag.$_lss_g"; then
+                # Empty (size test) and unclaimed: its owner died between
+                # create and write. Unreadable or claimed: a live owner.
+                if [ -f "$1/reap.$_lss_tag.$_lss_g" ] && [ ! -s "$1/reap.$_lss_tag.$_lss_g" ] \
+                    && _lss_unclaimed "$1/reap.$_lss_tag.$_lss_g"; then
                     :
                 else
                     return 0
@@ -299,11 +341,12 @@ _lss_reclaim() {
         esac
         _lss_g=$((_lss_g + 1))
     done
-    _lss_now="$(cat "$1/pid" 2>/dev/null)" || _lss_now=""
+    _lss_read "$1/pid"
+    _lss_now="$_lss_val"
     _lss_dead=no
     if [ "$_lss_now" = "$2" ]; then
         if [ -z "$2" ]; then
-            if [ -f "$1/pid" ] && _lss_unclaimed "$1/pid"; then
+            if [ -f "$1/pid" ] && [ ! -s "$1/pid" ] && _lss_unclaimed "$1/pid"; then
                 _lss_dead=yes
             fi
         elif [ "$_lss_tag" != "$2" ] || ! kill -0 "$2" 2>/dev/null; then
@@ -328,16 +371,19 @@ _lss_reclaim() {
 # still names us, so it can never free a slot someone else holds. It keeps the
 # slot dir: the dir is only a container, and removing it let a concurrent
 # acquirer's claim fail between its `mkdir` and its create (#2362 review).
-# Dirs above a lowered LLM_MAX_CONCURRENT stay as empty, unscanned dirs.
+# Dirs above a lowered LLM_MAX_CONCURRENT stay as empty, unscanned dirs. A
+# stamp or token that is still unreadable after one retry (_lss_mine) is kept:
+# it names us, so PID liveness frees it once this process exits; until then
+# that slot counts as held by us, which errs on the side of the cap.
 release_llm_slot() {
     if [ -n "${_LSS_REAP:-}" ]; then
-        if [ "$(cat "$_LSS_REAP" 2>/dev/null)" = "$$" ]; then
+        if _lss_mine "$_LSS_REAP"; then
             rm -f "$_LSS_REAP" 2>/dev/null || :
         fi
         _LSS_REAP=""
     fi
     if [ -n "${LLM_SLOT_HELD:-}" ]; then
-        if [ "$(cat "$LLM_SLOT_HELD/pid" 2>/dev/null)" = "$$" ]; then
+        if _lss_mine "$LLM_SLOT_HELD/pid"; then
             rm -f "$LLM_SLOT_HELD/pid" 2>/dev/null || :
         fi
         LLM_SLOT_HELD=""

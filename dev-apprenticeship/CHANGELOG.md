@@ -29,7 +29,7 @@ is asserted until multi-version CI is in place.
   is serialized by generation-numbered reap tokens created the same exclusive way: a reclaimer killed mid-reclaim is
   taken over instead of leaking the slot, and a stamp is removed only while it still names the dead holder, so a
   newer holder's stamp is never deleted. A stamp that is not a PID counts as dead and is never passed to `kill -0`;
-  an empty slot dir left by a crash between `mkdir` and the stamp is now acquirable instead of leaking. Release keeps the slot dir (it is only a container), so a concurrent release can no longer make an acquirer fail open, and the reclaim re-checks the holder's liveness under its token, so a reused PID is never removed.
+  an empty slot dir left by a crash between `mkdir` and the stamp is now acquirable instead of leaking. Release keeps the slot dir (it is only a container), so a concurrent release can no longer make an acquirer fail open, and the reclaim re-checks the holder's liveness under its token, so a reused PID is never removed. Stamps, claims and reap tokens are read only with the shell's builtin `read` (never `$(cat …)`), and only the size test decides that a file is empty, so a failed read can never evict a live holder. A slot entry the user cannot write costs one slot instead of disabling the cap; only a pass in which every slot refuses fails open at once.
   **Deploy: restart the federation after updating.** A pre-#2362 process still running writes its stamp without
   noclobber, so it can overwrite a new holder's stamp, and it treats a slot dir without a stamp (now every free slot) as busy.
 

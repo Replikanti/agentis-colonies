@@ -8,7 +8,7 @@
 # load check spawning K+1 background holders (this repo's demo-* naming
 # convention for a "run it, watch it prove the thing" script — see
 # demo-invariant-transient.sh, PR #2037). Part 4 runs #2362's cases, the same
-# as tools/test-llm-session-slot.sh 10-31 under the forge names: a slot is owned
+# as tools/test-llm-session-slot.sh 10-35 under the forge names: a slot is owned
 # by the exclusive create of slot-N/pid, never by mkdir's exit status; the
 # reclaim never removes a newer holder's stamp; an empty stamp or reap token is
 # dead only when no live creator claims it; a failed stamp write and a reclaimer
@@ -155,7 +155,7 @@ fi
 echo
 echo "demo-forge-slot.sh: 4) #2362: ownership by exclusive create, never mkdir's exit status; reclaim, write"
 echo "                    failure, empty stamps and tokens judged by their creator's claim, SIGKILLed"
-echo "                    reclaimers (same cases as tools/test-llm-session-slot.sh 10-31, forge names) ..."
+echo "                    reclaimers (same cases as tools/test-llm-session-slot.sh 10-35, forge names) ..."
 
 # uutils mkdir 0.8.0-0.10.0 (the /usr/bin/mkdir of Ubuntu 26.04) exits 0 when a concurrent creator wins the race,
 # so two contenders could both "win" one slot. LIAR/mkdir reproduces that deterministically on any host: it runs
@@ -430,36 +430,33 @@ else
     bad "takeover: _fss_reclaim is not defined"
 fi
 
-# 25. A reclaimer SIGKILLed at each external step of a reclaim (re-reading the stamp, right after removing it, while
-#     sweeping its tokens) never leaks the slot: the next acquirer gets slot-1 and no token is left. Stop-shims for
-#     cat and rm on the reclaimer's PATH record their PID and hang at the named step. (A kill between a token's
-#     create and its stamp, inside one builtin redirection, leaves the empty token of case 22.)
+# 25. A reclaimer SIGKILLed at each external step of a reclaim (after winning its token, just before removing the
+#     stamp; right after removing it; while sweeping its tokens) never leaks the slot: the next acquirer gets slot-1
+#     and no token is left. A stop-shim for rm on the reclaimer's PATH records its PID and hangs at the named step.
+#     (A kill between a token's create and its stamp, inside one builtin redirection, leaves the empty token of
+#     case 22.)
 KSHIM="$TMP/kshim"; mkdir -p "$KSHIM"
-KREAL_CAT="$(command -v cat)"; KREAL_RM="$(command -v rm)"; KSTOP_READY="$TMP/kready"
-export KREAL_CAT KREAL_RM KSTOP_READY
-for _b in cat rm; do
-    cat > "$KSHIM/$_b" <<'KSHIM_EOF'
+KREAL_RM="$(command -v rm)"; KSTOP_READY="$TMP/kready"
+export KREAL_RM KSTOP_READY
+cat > "$KSHIM/rm" <<'KSHIM_EOF'
 #!/bin/sh
-me="${0##*/}"
-if [ "$me" = cat ]; then real="$KREAL_CAT"; else real="$KREAL_RM"; fi
 last=""
 for a in "$@"; do last="$a"; done
-case "$me:$KSTOP_AT:$last" in
-    cat:reread:*/pid)
+case "$KSTOP_AT:$last" in
+    prerm:*/pid)
         for t in "${last%/pid}"/reap.*; do
             if [ -e "$t" ]; then echo "$$" > "$KSTOP_READY"; exec sleep 60; fi
         done ;;
-    rm:rmstamp:*/pid)
-        "$real" "$@"; echo "$$" > "$KSTOP_READY"; exec sleep 60 ;;
-    rm:sweep:*/reap.*)
+    rmstamp:*/pid)
+        "$KREAL_RM" "$@"; echo "$$" > "$KSTOP_READY"; exec sleep 60 ;;
+    sweep:*/reap.*)
         echo "$$" > "$KSTOP_READY"; exec sleep 60 ;;
 esac
-exec "$real" "$@"
+exec "$KREAL_RM" "$@"
 KSHIM_EOF
-    chmod +x "$KSHIM/$_b"
-done
+chmod +x "$KSHIM/rm"
 _t25_fail=""
-for _step in reread rmstamp sweep; do
+for _step in prerm rmstamp sweep; do
     fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"; rm -f "$KSTOP_READY"
     # shellcheck disable=SC2016
     env PATH="$KSHIM:$PATH" KSTOP_AT="$_step" sh -c '. "$1"; FORGE_MAX_SLOTS=1 FORGE_SLOT_WAIT_S=30 acquire_forge_slot' \
@@ -480,7 +477,7 @@ for _step in reread rmstamp sweep; do
     fi
 done
 if [ -z "$_t25_fail" ]; then
-    ok "a reclaimer SIGKILLed while re-reading, after removing the stamp, or while sweeping never leaks the slot"
+    ok "a reclaimer SIGKILLed before removing the stamp, right after it, or while sweeping never leaks the slot"
 else
     bad "SIGKILLed reclaimer leaked the slot:$_t25_fail"
 fi
@@ -662,6 +659,100 @@ if [ -f "$TMP/v.mark" ] && [ "$_r" = "$SLOTS/slot-1" ] && [ "$((_t1 - _t0))" -lt
     ok "a slot dir removed between an acquirer's mkdir and its claim is re-created; the acquirer takes the slot ($((_t1 - _t0))s)"
 else
     bad "slot dir removed under an acquirer: shim fired=$( [ -f "$TMP/v.mark" ] && echo yes || echo no), held='$_r' after $((_t1 - _t0))s"
+fi
+
+# 32-34 inject read faults on both ways a library can read a stamp or token: a `cat` that fails with no output (a
+# PATH shim, for libraries that read through command substitution) and a shell function `read` that fails (it shadows
+# the builtin in bash and dash). A failed read must never pass for an empty file: only the size test decides that.
+FSHIM="$TMP/fshim"; mkdir -p "$FSHIM"
+FREAL_CAT="$(command -v cat)"; export FREAL_CAT
+cat > "$FSHIM/cat" <<'FSHIM_EOF'
+#!/bin/sh
+for a in "$@"; do
+    case "$a" in
+        $FAIL_GLOB)
+            if [ -z "${FAIL_ONCE:-}" ]; then exit 1; fi
+            if ( set -C; true > "$FAIL_ONCE" ) 2>/dev/null; then exit 1; fi ;;
+    esac
+done
+exec "$FREAL_CAT" "$@"
+FSHIM_EOF
+chmod +x "$FSHIM/cat"
+
+# 32. A live holder's stamp that cannot be read is never reclaimed: the acquirer (K=1) waits its budget and fails
+#     open, and the holder's stamp stays.
+sleep 60 & _live=$!
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_live" > "$SLOTS/slot-1/pid"
+_t0=$(date +%s)
+# shellcheck disable=SC2016
+_r="$(env PATH="$FSHIM:$PATH" FAIL_GLOB='*/slot-1/pid' sh -c 'set -eu; . "$1"; read() { return 1; }
+    FORGE_MAX_SLOTS=1 FORGE_SLOT_WAIT_S=2 acquire_forge_slot; printf "%s" "$FORGE_SLOT_HELD"' sh "$LIB" 2>/dev/null || printf 'ABORTED')"
+_t1=$(date +%s)
+_s32="$(cat "$SLOTS/slot-1/pid" 2>/dev/null)"
+kill "$_live" 2>/dev/null || true; wait "$_live" 2>/dev/null || true
+if [ -z "$_r" ] && [ "$((_t1 - _t0))" -ge 2 ] && [ "$_s32" = "$_live" ]; then
+    ok "an unreadable stamp of a live holder is never reclaimed (waited $((_t1 - _t0))s, failed open, stamp kept)"
+else
+    bad "unreadable live stamp: held='$_r' after $((_t1 - _t0))s, stamp='$_s32' (want $_live)"
+fi
+
+# 33. A reap token whose owner is live but whose content cannot be read never lets a climber pass: the dead holder's
+#     stamp, the live owner's token and nothing else stay.
+sleep 60 & _live=$!
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"; printf '%s' "$_live" > "$SLOTS/slot-1/reap.$_dead2.1"
+# shellcheck disable=SC2016
+env PATH="$FSHIM:$PATH" FAIL_GLOB='*/reap.*' sh -c 'set -eu; . "$1"; read() { return 1; }; _fss_reclaim "$2" "$3"' \
+    sh "$LIB" "$SLOTS/slot-1" "$_dead2" >/dev/null 2>&1 || true
+_e33="$(entries "$SLOTS/slot-1" ' ')"
+kill "$_live" 2>/dev/null || true; wait "$_live" 2>/dev/null || true
+if [ "$_e33" = "pid reap.$_dead2.1 " ] && [ "$(cat "$SLOTS/slot-1/pid" 2>/dev/null)" = "$_dead2" ]; then
+    ok "an unreadable live reap token stops the climb (stamp and token untouched)"
+else
+    bad "unreadable live reap token: entries=[$_e33]"
+fi
+
+# 34. Release reads its own stamp with the builtin and retries one unreadable read: a transient failure still frees
+#     the slot; a stamp that stays unreadable is kept (it names us, so PID liveness frees it after we exit) and the
+#     caller's handle is cleared either way.
+fresh; rm -f "$TMP/f34.once"
+# shellcheck disable=SC2016
+_r34a="$(env PATH="$FSHIM:$PATH" FAIL_GLOB='*/slot-1/pid' FAIL_ONCE="$TMP/f34.once" sh -c 'set -eu; . "$1"
+    FORGE_MAX_SLOTS=1 acquire_forge_slot
+    _rn=0; read() { _rn=$((_rn + 1)); if [ "$_rn" = 1 ]; then return 1; fi; command read "$@"; }
+    release_forge_slot; if [ -e "$2/slot-1/pid" ]; then printf kept; else printf freed; fi; printf "/%s" "$FORGE_SLOT_HELD"' \
+    sh "$LIB" "$SLOTS" 2>/dev/null || printf 'ABORTED')"
+fresh
+# shellcheck disable=SC2016
+_r34b="$(env PATH="$FSHIM:$PATH" FAIL_GLOB='*/slot-1/pid' sh -c 'set -eu; . "$1"
+    FORGE_MAX_SLOTS=1 acquire_forge_slot; read() { return 1; }
+    release_forge_slot; if [ "$(cat "$2/slot-1/pid" 2>/dev/null || command -p cat "$2/slot-1/pid")" = "$$" ]; then printf kept; else printf gone; fi
+    printf "/%s" "$FORGE_SLOT_HELD"' sh "$LIB" "$SLOTS" 2>/dev/null || printf 'ABORTED')"
+if [ "$_r34a" = "freed/" ] && [ "$_r34b" = "kept/" ]; then
+    ok "release retries one unreadable read (transient: slot freed) and keeps a stamp that stays unreadable"
+else
+    bad "release with an unreadable stamp: transient='$_r34a' (want freed/), persistent='$_r34b' (want kept/)"
+fi
+
+# 35. A slot entry this user cannot use (here a stray regular file named slot-1) costs one slot, never the cap: at
+#     K=2 the first acquirer takes slot-2 and a second one waits its budget and fails open (max concurrency 1).
+#     Only a pass in which every slot refused fails open at once.
+fresh; : > "$SLOTS/slot-1"
+FORGE_MAX_SLOTS=2 FORGE_SLOT_WAIT_S=1 acquire_forge_slot; _a35="${FORGE_SLOT_HELD:-}"
+_t0=$(date +%s)
+# shellcheck disable=SC2016
+_b35="$(child 'FORGE_MAX_SLOTS=2 FORGE_SLOT_WAIT_S=2 acquire_forge_slot; printf "%s" "$FORGE_SLOT_HELD"')"
+_t1=$(date +%s)
+release_forge_slot
+fresh; : > "$SLOTS/slot-1"; : > "$SLOTS/slot-2"
+_t2=$(date +%s)
+# shellcheck disable=SC2016
+_c35="$(child 'FORGE_MAX_SLOTS=2 FORGE_SLOT_WAIT_S=5 acquire_forge_slot; printf "%s" "$FORGE_SLOT_HELD"')"
+_t3=$(date +%s)
+if [ "$_a35" = "$SLOTS/slot-2" ] && [ -z "$_b35" ] && [ "$((_t1 - _t0))" -ge 2 ] && [ -z "$_c35" ] \
+   && [ "$((_t3 - _t2))" -lt 2 ]; then
+    ok "a refused slot entry costs one slot (slot-2 taken, a second acquirer waited $((_t1 - _t0))s); all refused fails open at once"
+else
+    bad "refused slot: first='$_a35' second='$_b35' after $((_t1 - _t0))s, all-refused='$_c35' after $((_t3 - _t2))s"
 fi
 
 

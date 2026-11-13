@@ -95,6 +95,7 @@ acquire_forge_slot() {
     _fss_waited=0
     while :; do
         _fss_i=1
+        _fss_refused=0
         while [ "$_fss_i" -le "$_fss_k" ]; do
             _fss_slot="$_fss_dir/slot-$_fss_i"
             # Container only: its exit status is ignored on purpose (#2362,
@@ -112,23 +113,36 @@ acquire_forge_slot() {
                 return 0
             fi
             if [ "$_fss_rc" != lost ]; then
-                # The pool filesystem refused our claim or our stamp write
-                # (ENOSPC, EDQUOT); _fss_create already undid both. A gate
-                # that cannot write a PID cannot hold: fail open now.
-                return 0
-            fi
-            # Occupied — reclaim if the holder is dead (crash-safety). An
-            # empty stamp is dead only when no live process claims it (its
-            # creator died between create and write).
-            _fss_holder="$(cat "$_fss_slot/pid" 2>/dev/null)" || _fss_holder=""
-            if [ -n "$_fss_holder" ]; then
-                _fss_reclaim "$_fss_slot" "$_fss_holder"
-            elif [ -f "$_fss_slot/pid" ] && _fss_unclaimed "$_fss_slot/pid"; then
-                _fss_reclaim "$_fss_slot" ""
+                # This slot refused our claim or our stamp write (a full or
+                # read-only filesystem, or a slot entry we cannot write: a dir
+                # of another user, a stray file); _fss_create already undid
+                # both. Try the next slot: one bad entry must not disable the
+                # cap. Only a pass in which every slot refused fails open.
+                _fss_refused=$((_fss_refused + 1))
+            else
+                # Occupied — reclaim if the holder is dead (crash-safety). An
+                # empty stamp (the builtin size test, never a read that came
+                # back empty) is dead only when no live process claims it
+                # (its creator died between create and write). A stamp that
+                # is not empty but reads as nothing is unreadable: its holder
+                # counts as live.
+                _fss_read "$_fss_slot/pid"
+                if [ -n "$_fss_val" ]; then
+                    _fss_reclaim "$_fss_slot" "$_fss_val"
+                elif [ -f "$_fss_slot/pid" ] && [ ! -s "$_fss_slot/pid" ] && _fss_unclaimed "$_fss_slot/pid"; then
+                    _fss_reclaim "$_fss_slot" ""
+                fi
             fi
             _fss_i=$((_fss_i + 1))
         done
-        # All K slots held by live holders. Wait, then fail open.
+        if [ "$_fss_refused" -ge "$_fss_k" ]; then
+            # Every slot refused in this pass: the pool cannot hold a stamp
+            # at all (ENOSPC, EDQUOT, EROFS). Fail open now.
+            FORGE_SLOT_HELD=""
+            return 0
+        fi
+        # No slot won: each was held by a live holder or refused. Wait, then
+        # fail open.
         if [ "$_fss_waited" -ge "$_fss_wait" ]; then
             FORGE_SLOT_HELD=""
             return 0
@@ -136,6 +150,30 @@ acquire_forge_slot() {
         sleep 1
         _fss_waited=$((_fss_waited + 1))
     done
+}
+
+# _fss_read FILE: the one way this library reads a stamp, claim or token: the
+# shell's own `read`, with no command substitution and no external binary, so
+# a failed fork or exec can never pass for an empty file. Sets _fss_val to
+# FILE's first line, or "" when FILE is missing, empty or unreadable (the reset
+# matters: a failed redirection leaves the variable untouched). Callers decide
+# on the value, never on read's status: a file without a trailing newline
+# returns 1 but is still read. Whether a file is empty is decided only by the
+# builtin `[ -s ]`, so "" from a non-empty file means unreadable, never empty.
+_fss_read() {
+    _fss_val=""
+    { IFS= read -r _fss_val < "$1"; } 2>/dev/null || :
+}
+
+# _fss_mine FILE: succeed when FILE holds our PID. A non-empty FILE that reads
+# as nothing is read once more; if it is still unreadable it is not ours to
+# remove (see release_forge_slot).
+_fss_mine() {
+    _fss_read "$1"
+    if [ -z "$_fss_val" ] && [ -s "$1" ]; then
+        _fss_read "$1"
+    fi
+    [ "$_fss_val" = "$$" ]
 }
 
 # _fss_create FILE: the one exclusivity primitive, used for stamps and reap
@@ -278,10 +316,14 @@ _fss_reclaim() {
         if [ "$_fss_rc" != lost ]; then
             return 0
         fi
-        _fss_owner="$(cat "$1/reap.$_fss_tag.$_fss_g" 2>/dev/null)" || _fss_owner=""
+        _fss_read "$1/reap.$_fss_tag.$_fss_g"
+        _fss_owner="$_fss_val"
         case "$_fss_owner" in
             '')
-                if [ -f "$1/reap.$_fss_tag.$_fss_g" ] && _fss_unclaimed "$1/reap.$_fss_tag.$_fss_g"; then
+                # Empty (size test) and unclaimed: its owner died between
+                # create and write. Unreadable or claimed: a live owner.
+                if [ -f "$1/reap.$_fss_tag.$_fss_g" ] && [ ! -s "$1/reap.$_fss_tag.$_fss_g" ] \
+                    && _fss_unclaimed "$1/reap.$_fss_tag.$_fss_g"; then
                     :
                 else
                     return 0
@@ -296,11 +338,12 @@ _fss_reclaim() {
         esac
         _fss_g=$((_fss_g + 1))
     done
-    _fss_now="$(cat "$1/pid" 2>/dev/null)" || _fss_now=""
+    _fss_read "$1/pid"
+    _fss_now="$_fss_val"
     _fss_dead=no
     if [ "$_fss_now" = "$2" ]; then
         if [ -z "$2" ]; then
-            if [ -f "$1/pid" ] && _fss_unclaimed "$1/pid"; then
+            if [ -f "$1/pid" ] && [ ! -s "$1/pid" ] && _fss_unclaimed "$1/pid"; then
                 _fss_dead=yes
             fi
         elif [ "$_fss_tag" != "$2" ] || ! kill -0 "$2" 2>/dev/null; then
@@ -325,16 +368,19 @@ _fss_reclaim() {
 # still names us, so it can never free a slot someone else holds. It keeps the
 # slot dir: the dir is only a container, and removing it let a concurrent
 # acquirer's claim fail between its `mkdir` and its create (#2362 review).
-# Dirs above a lowered FORGE_MAX_SLOTS stay as empty, unscanned dirs.
+# Dirs above a lowered FORGE_MAX_SLOTS stay as empty, unscanned dirs. A
+# stamp or token that is still unreadable after one retry (_fss_mine) is kept:
+# it names us, so PID liveness frees it once this process exits; until then
+# that slot counts as held by us, which errs on the side of the cap.
 release_forge_slot() {
     if [ -n "${_FSS_REAP:-}" ]; then
-        if [ "$(cat "$_FSS_REAP" 2>/dev/null)" = "$$" ]; then
+        if _fss_mine "$_FSS_REAP"; then
             rm -f "$_FSS_REAP" 2>/dev/null || :
         fi
         _FSS_REAP=""
     fi
     if [ -n "${FORGE_SLOT_HELD:-}" ]; then
-        if [ "$(cat "$FORGE_SLOT_HELD/pid" 2>/dev/null)" = "$$" ]; then
+        if _fss_mine "$FORGE_SLOT_HELD/pid"; then
             rm -f "$FORGE_SLOT_HELD/pid" 2>/dev/null || :
         fi
         FORGE_SLOT_HELD=""
