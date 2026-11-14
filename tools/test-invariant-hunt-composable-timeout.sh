@@ -37,8 +37,10 @@
 #       single-target base); 1800000 (_aux_idx=1, now saturates the cap); 1800000
 #       (_aux_idx=2, cap boundary); 1800000 (_aux_idx=5, cap holds -- doesn't grow
 #       unboundedly).
-#   (c) exec.default_timeout_ms = 600000 is still a bare literal (intentionally
-#       unscaled per this plan).
+#   (c) exec.default_timeout_ms stays 600000 (intentionally unscaled per this
+#       plan): #2353 defines it once as INV_EXEC_DEFAULT_MS=600000 and the config
+#       line emits that variable. The written bytes are asserted end to end by
+#       tools/test-invariant-viair-gate.sh (e2e_nonviair_byte_identical).
 #
 # Usage: bash tools/test-invariant-hunt-composable-timeout.sh
 
@@ -152,12 +154,18 @@ else
          "mismatch(es):$b_fail"
 fi
 
-# (c) exec.default_timeout_ms is still a bare, unscaled literal.
-if printf '%s\n' "$run_src" | grep -Fq 'echo "exec.default_timeout_ms = 600000"'; then
-    pass "(c) exec.default_timeout_ms = 600000 is still a bare literal (intentionally unscaled)"
+# (c) exec.default_timeout_ms is still unscaled: one INV_EXEC_DEFAULT_MS=600000 definition, emitted verbatim.
+c_fail=""
+_def_count="$(printf '%s\n' "$run_src" | grep -c '^INV_EXEC_DEFAULT_MS=' || true)"
+[ "${_def_count:-0}" -eq 1 ] || c_fail="${c_fail} definitions=${_def_count:-0}-want-1"
+printf '%s\n' "$run_src" | grep -Fxq 'INV_EXEC_DEFAULT_MS=600000' || c_fail="${c_fail} value-not-600000"
+# shellcheck disable=SC2016  # matching the literal echo line, $ must not expand
+printf '%s\n' "$run_src" | grep -Fq 'echo "exec.default_timeout_ms = $INV_EXEC_DEFAULT_MS"' \
+    || c_fail="${c_fail} config-line-not-emitting-INV_EXEC_DEFAULT_MS"
+if [ -z "$c_fail" ]; then
+    pass "(c) exec.default_timeout_ms = INV_EXEC_DEFAULT_MS (600000), intentionally unscaled"
 else
-    fail "(c) exec.default_timeout_ms unscaled" \
-         "exec.default_timeout_ms = 600000 literal not found (unexpected change to the forge-run budget)"
+    fail "(c) exec.default_timeout_ms unscaled" "unexpected change to the forge-run budget:$c_fail"
 fi
 
 summary_exit

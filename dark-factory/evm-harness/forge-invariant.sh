@@ -218,7 +218,17 @@ fi
 
 # A scratch dir for this run's JSON + parser. Trapped so we never leak temp files.
 TMPD="$(mktemp -d "${TMPDIR:-/tmp}/forge-invariant.XXXXXX")" || { echo "forge-invariant: cannot create temp dir" >&2; exit 2; }
-trap 'rm -rf "$TMPD"' EXIT
+# One EXIT path (#2353 merged the #2258 diag trap into it): stop the opt-in gate heartbeat if it runs, append the
+# opt-in #2258 diag row, then remove the scratch dir. With neither opt-in it is exactly `rm -rf "$TMPD"`.
+_fi_diag_dir=""
+_fi_hb_pid=""
+# shellcheck disable=SC2329  # invoked by the EXIT trap
+_fi_cleanup() {
+  if [ -n "$_fi_hb_pid" ]; then kill "$_fi_hb_pid" 2>/dev/null; fi
+  if [ -n "$_fi_diag_dir" ]; then _diag_row; fi
+  rm -rf "$TMPD"
+}
+trap _fi_cleanup EXIT
 
 # --- #2258 OPT-IN COMPILE-SCOPE DIAG ROW (deep-hunt DEEP_HUNT_SKIP_BROKEN_TARGET) -------------------
 # The deep-hunt time-budget scheduler must tell a TARGET that does not compile under our toolchain (every lens on
@@ -287,7 +297,43 @@ else:
 sys.stdout.write("%s\t%s\t%d\t%s\n" % (harness, scope, n, first))
 DIAGPY
 }
-[ -z "$_fi_diag_dir" ] || trap '_diag_row; rm -rf "$TMPD"' EXIT
+
+# --- #2353 OPT-IN GATE HEARTBEAT (viaIR targets) --------------------------------------------------------------
+# A viaIR harness compile can run for many minutes with no output, which the deep-hunt per-cell staleness watchdog
+# (DEEP_CELL_STALE_S, #1982) would read as a hung cell. So, ONLY when the run opted in — a `gate-budget.txt` next to
+# this staged gate (run-invariant-hunt.sh writes it for a viaIR target or under DF_INV_GATE_TIMEOUT_MS, and the
+# prover then bounds this gate) AND --repo is that run's own staged copy (`<gate dir>/repo`, the #2258 test) — a
+# loop touches `<gate dir>/.gate-heartbeat` every DF_FORGE_HEARTBEAT_S (default 60 s: 15 beats per default 900 s
+# stale window) while forge runs. It stops when this gate exits (`kill -0 $$`, so even a SIGKILL ends it within
+# one interval). Mutant-kill, corpus replay and direct callers never match the opt-in; exit codes, banners and
+# stdout are unchanged.
+_fi_hb_file=""
+if [ -n "$_fi_self_dir" ] && [ -f "$_fi_self_dir/gate-budget.txt" ] && [ -d "$_fi_self_dir/repo" ] \
+   && [ "$(cd "$REPO" 2>/dev/null && pwd -P)" = "$(cd "$_fi_self_dir/repo" 2>/dev/null && pwd -P)" ]; then
+  _fi_hb_file="$_fi_self_dir/.gate-heartbeat"
+fi
+_fi_hb_start() {
+  [ -n "$_fi_hb_file" ] || return 0
+  _fi_hb_s="${DF_FORGE_HEARTBEAT_S:-60}"
+  case "$_fi_hb_s" in ''|*[!0-9]*|0) _fi_hb_s=60 ;; esac
+  _fi_gate_pid=$$
+  (
+    _sl=""
+    trap '[ -n "$_sl" ] && kill "$_sl" 2>/dev/null; exit 0' TERM INT HUP
+    while kill -0 "$_fi_gate_pid" 2>/dev/null; do
+      touch "$_fi_hb_file" 2>/dev/null
+      sleep "$_fi_hb_s" &
+      _sl=$!
+      wait "$_sl"
+      _sl=""
+    done
+  ) >/dev/null 2>&1 &
+  _fi_hb_pid=$!
+}
+_fi_hb_stop() {
+  if [ -n "$_fi_hb_pid" ]; then kill "$_fi_hb_pid" 2>/dev/null; wait "$_fi_hb_pid" 2>/dev/null; _fi_hb_pid=""; fi
+  return 0
+}
 
 banner() { echo "================ FORGE-INVARIANT: $1 ================" >&2; }
 
@@ -447,6 +493,7 @@ PY
 # _transient_candidate. When the result is unparseable AND it looks transient (fresh-deploy, harness declares
 # an invariant, no compile-error signature or signal-killed) we re-run up to FORGE_INVARIANT_RETRIES times with
 # a short backoff — a genuine compile error short-circuits and is never retried (byte-identical cost to today).
+_fi_hb_start
 _attempt=0
 while : ; do
   ( cd "$REPO" && forge "${ARGS[@]}" ) >"$TMPD/out.json" 2>"$TMPD/err.txt"
@@ -476,6 +523,7 @@ if [ -n "$SEED" ]; then
 else
   ( cd "$REPO" && forge "${HUMAN_ARGS[@]}" --fuzz-seed 1 1>&2 2>&1 ) || true
 fi
+_fi_hb_stop
 
 RAN="$(printf '%s\n' "$PARSE" | sed -n 's/^RAN=//p' | head -1)"
 FAILED="$(printf '%s\n' "$PARSE" | sed -n 's/^FAILED=//p' | head -1)"
