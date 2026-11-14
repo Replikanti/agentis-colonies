@@ -29,7 +29,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     cold build takes a forge slot. A hung build holds its cell for up to 2 h before the fallback bound
     (600000 + 7200000 = 7800000 ms) applies.
   - `invariant-prover.ag` bounds its forge gate at `600000 + max(cold_build_ms, prebuild_ms)` from the new rundir
-    file `gate-budget.txt` (numa: 2401590 ms) or at the operator override `DF_INV_GATE_TIMEOUT_MS`, through
+    file `gate-budget.txt` (numa: 600000 + 1849000 = 2449000 ms from this change's 1848 s cold run; the earlier
+    1801.59 s measurement gave 2401590 ms) or at the operator override `DF_INV_GATE_TIMEOUT_MS`, through
     coreutils `timeout` (graceful rc 124) inside an inline agentis backstop 60 s later, prints `GATE-BOUND|` /
     `GATE-TIMEOUT|` before the verdict marker, and stops the repair loop on a gate timeout.
   - A bounded gate keeps its scratch dir in the run dir (`.gate-tmp.*`) and the runner sweeps it after every prover

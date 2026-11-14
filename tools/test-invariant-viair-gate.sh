@@ -512,7 +512,7 @@ fi
 # Part B -- the REAL runner -> agentis go invariant-prover.ag path with the stub forge (needs agentis).
 # ==========================================================================================================
 if ! command -v agentis >/dev/null 2>&1; then
-    skip "part B (agentis not on PATH): e2e_override_kills_gate, e2e_override_generous_clean, e2e_viair_derived_bound, e2e_nonviair_byte_identical, e2e_runner_sweeps_gate_tmp, e2e_repair_rounds_bounded"
+    skip "part B (agentis not on PATH): e2e_override_kills_gate, e2e_override_generous_clean, e2e_viair_derived_bound, e2e_nonviair_byte_identical, e2e_runner_sweeps_gate_tmp, prover_timeout_stops_composable_repair, e2e_repair_rounds_bounded"
 else
     E2E_SRC="$WORK/e2e-src"
     mkdir -p "$E2E_SRC/src"
@@ -600,6 +600,29 @@ else
         pass "e2e_runner_sweeps_gate_tmp: a scratch dir left in <run>/.gate-tmp.* is removed after the prover run"
     else
         fail "e2e_runner_sweeps_gate_tmp" "marker='$(last_marker "$WORK/b6")' left=$(find "$WORK/b6/run" -maxdepth 1 -name '.gate-tmp.*' | tr '\n' ' ')"
+    fi
+
+    # --- prover_timeout_stops_composable_repair ----------------------------------------------------------------
+    # A gate timeout (rc 124) stops the repair loop in composable-fresh mode too, even while the harness still misses
+    # a required real deploy (which on its own keeps the loop repairing). The prover's own stop_flag / stop_flag_both
+    # (and the both-real helpers they call) are extracted verbatim and interpreted by the real agentis runtime.
+    PROVER_AG="$DF/auditor/agents/invariant-prover.ag"
+    mkdir -p "$WORK/sf"
+    {
+      echo 'cb 20000;'
+      for _fn in has_real_deploy missing_real_deploys stop_flag stop_flag_both; do
+        awk -v n="$_fn" '$0 ~ "^fn " n "\\(" {f=1} f{print} f&&/^}/{exit}' "$PROVER_AG"
+      done
+      echo 'let names = ["Vault", "Aux"];'
+      echo 'print("SF|" + stop_flag_both(124, "mock", true, names) + "|" + stop_flag_both(0, "mock", true, names) + "|" + stop_flag_both(124, "mock", false, names) + "|" + stop_flag(124) + "|" + stop_flag(2));'
+    } > "$WORK/sf/sf.ag"
+    ( cd "$WORK/sf" && agentis init >/dev/null 2>&1; agentis go sf.ag > "$WORK/sf/out.txt" 2>&1 )
+    sf_got="$(grep '^SF|' "$WORK/sf/out.txt" | tail -1)"
+    # timeout+violation stops | CLEAN+violation keeps repairing | timeout single-target stops | stop_flag(124) | rc 2 repairs
+    if [ "$sf_got" = "SF|1|0|1|1|0" ]; then
+        pass "prover_timeout_stops_composable_repair: rc 124 stops the loop in composable-fresh mode despite a both-real violation"
+    else
+        fail "prover_timeout_stops_composable_repair" "got '$sf_got' want 'SF|1|0|1|1|0'; $(tail -3 "$WORK/sf/out.txt" | tr '\n' ';')"
     fi
 
     # --- e2e_repair_rounds_bounded ----------------------------------------------------------------------------
