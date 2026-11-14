@@ -217,7 +217,18 @@ if [ -n "$FORK_URL" ]; then
 fi
 
 # A scratch dir for this run's JSON + parser. Trapped so we never leak temp files.
-TMPD="$(mktemp -d "${TMPDIR:-/tmp}/forge-invariant.XXXXXX")" || { echo "forge-invariant: cannot create temp dir" >&2; exit 2; }
+# #2353: a BOUNDED gate (a `gate-budget.txt` next to this staged gate and --repo is its `<gate dir>/repo`, the same
+# opt-in as the gate heartbeat below) can be stopped at its bound, and a SIGKILL (timeout -k, the agentis backstop)
+# runs no trap. So its scratch dir lives in the run dir as `.gate-tmp.XXXXXX`, a known place run-invariant-hunt.sh
+# sweeps after every prover run, instead of piling up in the shared $TMPDIR. Unbounded runs keep ${TMPDIR:-/tmp}.
+_fi_tmp_base="${TMPDIR:-/tmp}"
+_fi_tmp_name="forge-invariant"
+_fi_gate_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)"
+if [ -n "$_fi_gate_dir" ] && [ -f "$_fi_gate_dir/gate-budget.txt" ] && [ -d "$_fi_gate_dir/repo" ] \
+   && [ "$(cd "$REPO" 2>/dev/null && pwd -P)" = "$(cd "$_fi_gate_dir/repo" 2>/dev/null && pwd -P)" ]; then
+  _fi_tmp_base="$_fi_gate_dir"; _fi_tmp_name=".gate-tmp"
+fi
+TMPD="$(mktemp -d "$_fi_tmp_base/$_fi_tmp_name.XXXXXX")" || { echo "forge-invariant: cannot create temp dir" >&2; exit 2; }
 # One EXIT path (#2353 merged the #2258 diag trap into it): stop the opt-in gate heartbeat if it runs, append the
 # opt-in #2258 diag row, then remove the scratch dir. With neither opt-in it is exactly `rm -rf "$TMPD"`.
 _fi_diag_dir=""

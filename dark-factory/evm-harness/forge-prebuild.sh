@@ -34,9 +34,12 @@
 # both build cold, which is exactly the pre-#2353 cost.
 #
 # Env:
-#   DF_FORGE_PREBUILD_MAX_S  bound on the build, in seconds (default 3600: about 2x the measured 1801.59 s numa
-#                            cold build, the same 2x margin the pointed-l0 profile derived from 1803 s; lower and
-#                            numa never warms, higher and a hung build holds its cell longer)
+#   DF_FORGE_PREBUILD_MAX_S  wall-clock bound on the build, in seconds (default 7200). Derivation: the uncontended
+#                            numa cold build is 1848 s (1801.59 s earlier). On a contended heavy.slice solc got about
+#                            35-45 % of one core, which puts the same build at about 4100-5300 s (1848/0.45 to
+#                            1848/0.35); a 3600 s cap was hit there and the cell ended HARNESS_ERROR. 7200 s covers a
+#                            solc share down to about 26 % (1848/7200). Weak spot: a hung build holds its cell for up
+#                            to 2 h before the prover's fallback bound (600000 + 7200000 = 7800000 ms) applies.
 #   DF_FORGE_HEARTBEAT_S     heartbeat interval, in seconds (default 60: 15 beats per default 900 s
 #                            DEEP_CELL_STALE_S window, so a stalled beat or two cannot trip the cell watchdog)
 #   FOUNDRY_PROFILE          part of the warm key (a different profile is a different build)
@@ -92,8 +95,8 @@ OUT_DIR="$(printf '%s\n' "$KEYS" | sed -n 3p)"
 # --- viaIR: heartbeat first, before any wait or build -------------------------------------------------------
 HB_S="${DF_FORGE_HEARTBEAT_S:-60}"
 case "$HB_S" in ''|*[!0-9]*|0) HB_S=60 ;; esac
-PB_MAX="${DF_FORGE_PREBUILD_MAX_S:-3600}"
-case "$PB_MAX" in ''|*[!0-9]*|0) PB_MAX=3600 ;; esac
+PB_MAX="${DF_FORGE_PREBUILD_MAX_S:-7200}"
+case "$PB_MAX" in ''|*[!0-9]*|0) PB_MAX=7200 ;; esac
 TMPD="$(mktemp -d "${TMPDIR:-/tmp}/forge-prebuild.XXXXXX")" || noop "cannot create a temp dir"
 SELF=$$
 # kill_build: stop a build that is still running. It runs under `timeout`, its own process-group leader, so the

@@ -119,6 +119,8 @@ case "$sub" in
     is_json=0
     for _a in "$@"; do [ "$_a" = "--json" ] && is_json=1; done
     [ "$is_json" -eq 0 ] && exit 0
+    # A scratch dir left in the run dir, as a gate SIGKILLed at its bound leaves it (cwd = the staged repo).
+    [ -n "${STUB_PLANT:-}" ] && mkdir -p "../.gate-tmp.planted" && : > "../.gate-tmp.planted/out.json"
     "$STUB_SLEEP" "${STUB_TEST_S:-0}"
     if [ "${STUB_TEST_MODE:-clean}" = "compilefail" ]; then
       printf 'Compiler run failed\nError (7920): Identifier not found or not unique.\n' >&2
@@ -423,6 +425,56 @@ else
     fail "gate_heartbeat_absent_by_default" "rc=$g2rc hb=$([ -e "$WORK/g2/.gate-heartbeat" ] && echo yes || echo no) tmp=$(find "$WORK/g2tmp" -mindepth 1 | tr '\n' ' ')"
 fi
 
+# --- gate_tmpdir_removed_on_timeout: a gate stopped at its bound (coreutils timeout TERMs its process group, the
+# prover's graceful path) still removes its scratch dir instead of leaving one behind per stopped attempt.
+if command -v timeout >/dev/null 2>&1; then
+    gate_layout "$WORK/g3"
+    printf 'via_ir=1\nbase_ms=600000\n' > "$WORK/g3/gate-budget.txt"
+    mkdir -p "$WORK/g3tmp"
+    DF_FORGE_HEARTBEAT_S=1 STUB_TEST_S=30 TMPDIR="$WORK/g3tmp" PATH="$STUBPATH" timeout -k 10 2 bash "$WORK/g3/forge-invariant.sh" \
+        --repo "$WORK/g3/repo" --target "$WORK/g3/repo/test/Inv.t.sol" > "$WORK/g3.out" 2>&1
+    g3rc=$?
+    "$STUB_SLEEP" 1
+    if [ "$g3rc" = 124 ] && [ -z "$(find "$WORK/g3tmp" -mindepth 1)" ] && [ -z "$(procs_under "$STUB_SLEEP 30")" ]; then
+        pass "gate_tmpdir_removed_on_timeout: a gate stopped by timeout (rc 124) leaves no temp dir and no forge child"
+    else
+        fail "gate_tmpdir_removed_on_timeout" "rc=$g3rc tmp=$(find "$WORK/g3tmp" -mindepth 1 | tr '\n' ' ') left=$(procs_under "$STUB_SLEEP 30" | tr '\n' ';')"
+    fi
+else
+    skip "gate_tmpdir_removed_on_timeout (no coreutils timeout on PATH)"
+fi
+
+# --- gate_tmpdir_in_rundir_when_bounded: a bounded gate keeps its scratch dir in the run dir (`.gate-tmp.*`, swept by
+# the runner), so even a SIGKILL at its bound, which runs no trap, leaves nothing in the shared $TMPDIR.
+if command -v setsid >/dev/null 2>&1; then
+    gate_layout "$WORK/g4"
+    printf 'via_ir=1\nbase_ms=600000\n' > "$WORK/g4/gate-budget.txt"
+    mkdir -p "$WORK/g4tmp"
+    DF_FORGE_HEARTBEAT_S=1 STUB_TEST_S=30 TMPDIR="$WORK/g4tmp" PATH="$STUBPATH" setsid bash "$WORK/g4/forge-invariant.sh" \
+        --repo "$WORK/g4/repo" --target "$WORK/g4/repo/test/Inv.t.sol" > "$WORK/g4.out" 2>&1 &
+    _gp=$!
+    for _i in $(seq 1 50); do [ -n "$(procs_under "$STUB_SLEEP 30")" ] && break; "$STUB_SLEEP" 0.1; done
+    in_run="$(find "$WORK/g4" -maxdepth 1 -name '.gate-tmp.*' -type d | grep -c . || true)"
+    kill -KILL -- "-$_gp" 2>/dev/null
+    wait "$_gp" 2>/dev/null
+    if [ "$in_run" = 1 ] && [ -z "$(find "$WORK/g4tmp" -mindepth 1)" ]; then
+        pass "gate_tmpdir_in_rundir_when_bounded: the bounded gate's scratch dir is <run>/.gate-tmp.*, a SIGKILL leaves nothing in \$TMPDIR"
+    else
+        fail "gate_tmpdir_in_rundir_when_bounded" "in-run=$in_run tmpdir=$(find "$WORK/g4tmp" -mindepth 1 | tr '\n' ' ')"
+    fi
+else
+    skip "gate_tmpdir_in_rundir_when_bounded (no setsid)"
+fi
+
+# --- prebuild_default_max: the DF_FORGE_PREBUILD_MAX_S default is 7200 s (derivation in the shim header).
+# shellcheck disable=SC2016  # matching the literal assignment line, $ must not expand
+if grep -Fq 'PB_MAX="${DF_FORGE_PREBUILD_MAX_S:-7200}"' "$SHIM" 2>/dev/null \
+   && grep -Fq "case \"\$PB_MAX\" in ''|*[!0-9]*|0) PB_MAX=7200 ;; esac" "$SHIM" 2>/dev/null; then
+    pass "prebuild_default_max: DF_FORGE_PREBUILD_MAX_S defaults (and falls back) to 7200 s"
+else
+    fail "prebuild_default_max" "the shim's DF_FORGE_PREBUILD_MAX_S default/fallback is not 7200"
+fi
+
 # ==========================================================================================================
 # Part A -- DF_INV_GATE_TIMEOUT_MS validation (the runner's block, extracted by its content anchors and eval'd).
 # ==========================================================================================================
@@ -460,7 +512,7 @@ fi
 # Part B -- the REAL runner -> agentis go invariant-prover.ag path with the stub forge (needs agentis).
 # ==========================================================================================================
 if ! command -v agentis >/dev/null 2>&1; then
-    skip "part B (agentis not on PATH): e2e_override_kills_gate, e2e_override_generous_clean, e2e_viair_derived_bound, e2e_nonviair_byte_identical, e2e_repair_rounds_bounded"
+    skip "part B (agentis not on PATH): e2e_override_kills_gate, e2e_override_generous_clean, e2e_viair_derived_bound, e2e_nonviair_byte_identical, e2e_runner_sweeps_gate_tmp, e2e_repair_rounds_bounded"
 else
     E2E_SRC="$WORK/e2e-src"
     mkdir -p "$E2E_SRC/src"
@@ -537,6 +589,17 @@ else
         pass "e2e_nonviair_byte_identical: no facts file, no GATE- line, config 600000, unbounded gate, CLEAN"
     else
         fail "e2e_nonviair_byte_identical" "facts=$([ -e "$WORK/b4/run/gate-budget.txt" ] && echo yes || echo no) marker='$(last_marker "$WORK/b4")' calls=$(grep '^test' "$STUB_LOG" | cut -d'|' -f1-3 | tr '\n' ';')"
+    fi
+
+    # --- e2e_runner_sweeps_gate_tmp ---------------------------------------------------------------------------
+    # The stub plants <run>/.gate-tmp.planted while the bounded gate runs (what a gate SIGKILLed at its bound leaves
+    # behind); the runner must sweep it once the prover returns.
+    run_e2e "$WORK/b6" DF_INV_GATE_TIMEOUT_MS=20000 STUB_PLANT=1 -- --handler-fixture "$WORK/e2e-fixture.t.sol"
+    if [ "$(last_marker "$WORK/b6")" = "INVARIANT|Vault.sol:Vault|CLEAN" ] \
+       && [ -z "$(find "$WORK/b6/run" -maxdepth 1 -name '.gate-tmp.*')" ]; then
+        pass "e2e_runner_sweeps_gate_tmp: a scratch dir left in <run>/.gate-tmp.* is removed after the prover run"
+    else
+        fail "e2e_runner_sweeps_gate_tmp" "marker='$(last_marker "$WORK/b6")' left=$(find "$WORK/b6/run" -maxdepth 1 -name '.gate-tmp.*' | tr '\n' ' ')"
     fi
 
     # --- e2e_repair_rounds_bounded ----------------------------------------------------------------------------

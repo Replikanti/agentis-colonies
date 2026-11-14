@@ -24,12 +24,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     record (`DF_FORGE_WARM_DIR`, default `<out>/.forge-warm`; STAGE 4.5 shares `<out>/deep-hunt/.forge-warm` across
     all cells) and imports it into every later cell. `cache/invariant` never travels, so one cell's persisted
     invariant failure cannot replay as a false FINDING in another cell. The build is bounded by
-    `DF_FORGE_PREBUILD_MAX_S` (default 3600, about 2x the measured cold build) and only a cold build takes a forge
-    slot.
+    `DF_FORGE_PREBUILD_MAX_S` (default 7200 s wall clock: the 1848 s uncontended numa cold build at a solc share
+    down to about 26 % of one core; a contended heavy.slice gave solc 35-45 % and a 3600 s cap was hit) and only a
+    cold build takes a forge slot. A hung build holds its cell for up to 2 h before the fallback bound
+    (600000 + 7200000 = 7800000 ms) applies.
   - `invariant-prover.ag` bounds its forge gate at `600000 + max(cold_build_ms, prebuild_ms)` from the new rundir
     file `gate-budget.txt` (numa: 2401590 ms) or at the operator override `DF_INV_GATE_TIMEOUT_MS`, through
     coreutils `timeout` (graceful rc 124) inside an inline agentis backstop 60 s later, prints `GATE-BOUND|` /
     `GATE-TIMEOUT|` before the verdict marker, and stops the repair loop on a gate timeout.
+  - A bounded gate keeps its scratch dir in the run dir (`.gate-tmp.*`) and the runner sweeps it after every prover
+    run, so a gate SIGKILLed at its bound (`timeout -k`, the agentis backstop) no longer leaves a dir in `$TMPDIR`.
   - The prebuild and the bounded gate touch a heartbeat every `DF_FORGE_HEARTBEAT_S` (default 60 s) so the per-cell
     staleness watchdog does not kill a compiling cell.
   - Non-viaIR targets without the override are byte-identical: no prebuild, no `gate-budget.txt`, the same gate

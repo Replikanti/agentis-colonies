@@ -179,7 +179,8 @@
 #                        non-viaIR target keeps today's unbounded gate under exec.default_timeout_ms = 600000.
 #   DF_FORGE_WARM_DIR    Where a viaIR prebuild publishes its warm record (default <out>/.forge-warm; STAGE 4.5 of
 #                        run-zone-hunt.sh points every cell of a deep-hunt stage at <out>/deep-hunt/.forge-warm).
-#   DF_FORGE_PREBUILD_MAX_S  Bound on the viaIR prebuild, in seconds (default 3600).
+#   DF_FORGE_PREBUILD_MAX_S  Wall-clock bound on the viaIR prebuild, in seconds (default 7200; derivation in
+#                        evm-harness/forge-prebuild.sh).
 #   DF_FORGE_HEARTBEAT_S Heartbeat interval of the prebuild and of the bounded gate, in seconds (default 60).
 #                        An operator cell cap (DEEP_HUNT_CELL_TIMEOUT_S) on a viaIR root must cover one cold
 #                        build for the first cell of that root (numa-audit: 1801.59 s).
@@ -1053,6 +1054,9 @@ run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 =
       "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging --grant-pii ) >"$_celllog" 2>&1 || \
       echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $_celllog)" >&2
   release_forge_slot
+  # #2353: a bounded gate keeps its scratch dir in $RUN/.gate-tmp.* (forge-invariant.sh); one stopped by SIGKILL at its
+  # bound (timeout -k, the agentis backstop) leaves it behind. Sweep them here so stopped attempts never accumulate.
+  rm -rf "$RUN"/.gate-tmp.* 2>/dev/null || true
   # The prover's contract: exactly one `INVARIANT|<file:fn>|<verdict>` line, then (on a FINDING) `STEP|...` lines.
   # Take the LAST verdict match. No line at all = HARNESS_ERROR (no verdict produced).
   _vline="$(grep 'INVARIANT|' "$_celllog" | tail -1 || true)"
