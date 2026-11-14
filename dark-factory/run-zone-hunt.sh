@@ -130,6 +130,10 @@
 #                       Any of the four knobs set => STAGE 4.5 runs through lib/deep-hunt-sched.sh (enqueue pass, cell
 #                       scheduler, collect pass in queue order) and writes deep-hunt/cell-status.tsv. All four unset/0
 #                       (the default) => STAGE 4.5 is byte-identical to before. Bad values exit 2.
+#                       #2353: on a viaIR root the first cell pays one cold forge build (numa-audit: 1801.59 s) before
+#                       its gate runs, so an operator DEEP_HUNT_CELL_TIMEOUT_S must cover that build.
+#   DF_FORGE_WARM_DIR=<dir>  #2353 (ENV KNOB). Warm-record dir shared by every STAGE 4.5 cell for the viaIR prebuild of
+#                       run-invariant-hunt.sh (default <out>/deep-hunt/.forge-warm, created only by a viaIR prebuild).
 #   DF_FOUNDRY_SHIM=0|1  #2277 (ENV KNOB, default 1; read only with --deep-hunt / --vector-hunt). A Hardhat-only project
 #                       root (hardhat.config.*, no foundry.toml) gets a generated Foundry SHIM WORKING COPY under
 #                       <out>/.foundry-shim/<slug>/ (lib/foundry_shim.py: the root's .sol/.md sources, a .sol-only
@@ -1563,6 +1567,11 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
     CELLWD="$HERE/lib/cell-watchdog.sh"   # #1982 per-cell staleness watchdog wrapper
     [ -x "$INVHUNT" ] || { echo "run-zone-hunt.sh: [deep-hunt] required entrypoint not found/executable: $INVHUNT" >&2; exit 3; }
     DEEP="$OUT/deep-hunt"; mkdir -p "$DEEP"
+    # #2353: every cell and root of this stage shares one warm-record dir for the viaIR prebuild in
+    # run-invariant-hunt.sh (one cold build per viaIR root instead of one per cell). A hidden dir, so the
+    # "$DEEP"/*/.dh-uncollected glob never sees it; it survives --deep-hunt-resume; it is created only by a viaIR
+    # prebuild; an env var, not an argv flag, so neither $INVHUNT call site changes. An operator value wins.
+    export DF_FORGE_WARM_DIR="${DF_FORGE_WARM_DIR:-$DEEP/.forge-warm}"
     # #2258 deep-hunt TIME BUDGET: lib/deep-hunt-sched.sh owns the per-cell cap, the zone budget, the broken-target
     # skip and the parallel window. dh_sched_init is a NO-OP unless one of the four knobs is set; when one is, it
     # points $INVHUNT at lib/deep-hunt-cell.sh (a recording shim) and keeps the real engine in DH_ENGINE, so the

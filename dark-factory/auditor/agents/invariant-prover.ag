@@ -49,6 +49,10 @@ cb 300000;
 //   promise-fixture.txt    #2245 PROMISES: optional verbatim PROMISE| lines used instead of the extraction call.
 //   promise-gate.py        #2245 PROMISES: the staged citation gate + promise-coverage matcher.
 //   promises-raw.txt / promises-accepted.tsv  written BY this agent (the raw promise text; the gate's accepted rows).
+//   gate-budget.txt        #2353: the forge gate's budget facts (via_ir, base_ms, cold_build_ms, prebuild_ms,
+//                          prebuild_rc, warm_hit, override_ms, timeout_cmd), written by run-invariant-hunt.sh ONLY
+//                          for a viaIR target or under DF_INV_GATE_TIMEOUT_MS. Present => every gate run is bounded
+//                          (GATE-BOUND| / GATE-TIMEOUT| readout before the marker); absent => today's gate exec.
 // Stdout: exactly one verdict marker line —
 //   INVARIANT|<file:fn>|<FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR|LOW_COVERAGE|LOW_PROMISE_COVERAGE>
 // followed, on a FINDING, by the shrunk exploit call-sequence (one `STEP|...` line per call). Under REACH the
@@ -1855,6 +1859,33 @@ let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName,
 // substituted-target test is rejected as HARNESS_ERROR no matter which attempt produced it.
 let gateExtra = fork + linkArgs;
 
+// #2353 — THE FORGE GATE'S OWN BOUND. A cold viaIR build of the staged repo takes ~30 min (numa-audit: 1801.59 s)
+// and used to run inside the gate under the fixed exec.default_timeout_ms = 600000, whose ExecTimeout aborts this
+// whole agent and drops every earlier print. run-invariant-hunt.sh now prebuilds a viaIR repo (sharing a warm
+// cache across cells) and writes the measured facts to the FIXED rundir file gate-budget.txt (same absolute
+// rundir idiom as REACH, NOT a new exec.env_passthrough entry). The bound is the operator's override_ms when set,
+// else base_ms + max(cold_build_ms, prebuild_ms) for a viaIR target: a single harness's IR closure is a subset of
+// the project (measured: a harness recompile on the warm numa cache took 277.40 s against the 1801.59 s cold
+// build), and the elapsed prebuild time is a lower bound on the cold build when the prebuild itself hit its max.
+// No file (a non-viaIR target, no override) => gateBoundMs == 0 => run_gate issues today's exact exec string.
+fn budget_field(facts: string, key: string) -> int {
+    return parse_int(regex_capture("(?m)^" + key + "=([0-9]+)$", facts, 1));
+}
+fn gate_bound_ms(facts: string) -> int {
+    if len(facts) == 0 { return 0; }
+    let ovr = budget_field(facts, "override_ms");
+    if ovr > 0 { return ovr; }
+    if budget_field(facts, "via_ir") != 1 { return 0; }
+    let cold = budget_field(facts, "cold_build_ms");
+    let pre = budget_field(facts, "prebuild_ms");
+    let build = if cold > pre { cold } else { pre };
+    return budget_field(facts, "base_ms") + build;
+}
+let gateBudget = read_reach_file(reachDir + "/gate-budget.txt");
+let gateBoundMs = gate_bound_ms(gateBudget);
+let gateTimeoutCmd = regex_capture("(?m)^timeout_cmd=(.+)$", gateBudget, 1);
+let gateBoundKind = if budget_field(gateBudget, "override_ms") > 0 { "override" } else { "viair" };
+
 // #2245-FCB-STRIP-BEGIN
 // #2245 — the native flat-cyborg result-file channel (#2207, llm.flat_cyborg.result_file_dir, set by
 // run-invariant-hunt.sh) wraps the driven model's reply in sentinels: a first line `FCB_<hex>_BEGIN` and a
@@ -1903,9 +1934,21 @@ fn write_test(src: string, out: string) -> string {
 }
 // Run the gate over the just-written INV_OUT and capture its `__rc=<n>` marker. Wrapped in a fn so the repair
 // loop reuses the EXACT gate invocation (same flags, same shell_escape()ing) every attempt.
+// #2353: with a gate bound (gateBoundMs > 0, the module-level lets above; read directly so the three pinned call
+// texts do not ripple) the gate runs under coreutils `timeout` at ceil(bound / 1000) s (`.ag` has no `%`), which
+// stops it gracefully with rc 124 (a -k 30 SIGKILL's 137 is folded into 124), inside an inline agentis backstop
+// 60 s later: 30 s past the hard kill for the gate's EXIT trap. A backstop at or below the hard kill would turn a
+// graceful timeout into a fatal ExecTimeout that loses this agent's output. No `timeout` binary => no wrapper, the
+// backstop alone bounds the gate. gateBoundMs == 0 => today's exact exec string.
 fn run_gate(gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string) -> string {
+    if gateBoundMs <= 0 {
+        // colony-lint: safe-exec-concat
+        return exec sh "set +e; sh " + shell_escape(gateSh) + " --repo " + shell_escape(repo) + " --target " + shell_escape(out) + " --match " + shell_escape(matchPrefix) + budgetArgs + forkArgs + " 2>&1; echo __rc=$?";
+    }
+    let backstop = gateBoundMs + 60000;
+    let wrap = if len(gateTimeoutCmd) > 0 { shell_escape(gateTimeoutCmd) + " -k 30 " + to_string((gateBoundMs + 999) / 1000) + " " } else { "" };
     // colony-lint: safe-exec-concat
-    return exec sh "set +e; sh " + shell_escape(gateSh) + " --repo " + shell_escape(repo) + " --target " + shell_escape(out) + " --match " + shell_escape(matchPrefix) + budgetArgs + forkArgs + " 2>&1; echo __rc=$?";
+    return exec sh timeout backstop "set +e; " + wrap + "sh " + shell_escape(gateSh) + " --repo " + shell_escape(repo) + " --target " + shell_escape(out) + " --match " + shell_escape(matchPrefix) + budgetArgs + forkArgs + " 2>&1; r=$?; [ \"$r\" -eq 137 ] && r=124; echo __rc=$r";
 }
 
 // --- BOUNDED COMPILE-REPAIR LOOP (#1073) --------------------------------------------------------
@@ -2168,10 +2211,13 @@ fn rstate(stopped: string, testSrc: string, runOut: string) -> string {
 // loop — the harness is valid and the gate already retried the starved run, so regenerating it via the #1073
 // LLM compile-repair loop would waste a call and can break a good harness. The run's final-verdict path maps
 // rc 3 to the re-runnable TRANSIENT_ERROR token, so the cell is re-hunted on resume rather than repaired here.
+// #2353: a bounded gate that hit its bound (rc 124, which only the bounded wrapper produces) also stops the loop: a
+// regenerated harness does not make the compile shorter. verdict_of(124) stays HARNESS_ERROR.
 fn stop_flag(rc: int) -> string {
     if rc == 1 { return "1"; }
     if rc == 0 { return "1"; }
     if rc == 3 { return "1"; }
+    if rc == 124 { return "1"; }
     return "0";
 }
 // FM2 (#1077) — the BOTH-REAL-AWARE stop flag. In composable-fresh mode a TERMINAL verdict (rc 0/1) is NOT a
@@ -2180,8 +2226,11 @@ fn stop_flag(rc: int) -> string {
 // drive ALL named contracts real. Outside composable-fresh (`composeFresh` false) — and on the single-target
 // path — this is byte-identical to `stop_flag(rc)`: only the rc decides. A residual violation after the budget
 // is exhausted is forced to HARNESS_ERROR by the final-verdict computation below (it never leaks a partial CLEAN).
+// #2353: a gate timeout (rc 124) stops the loop in composable-fresh mode too — a both-real repair would pay the same
+// bound again; a residual both-real violation is still forced to HARNESS_ERROR below.
 fn stop_flag_both(rc: int, testSrc: string, composeFresh: bool, names: list<string>) -> string {
     if stop_flag(rc) == "0" { return "0"; }
+    if rc == 124 { return "1"; }
     if !composeFresh { return "1"; }
     if len(missing_real_deploys(testSrc, names)) > 0 { return "0"; }
     return "1";
@@ -2333,6 +2382,13 @@ if promisesOn {
     print("PROMISE-COVERAGE|" + targetFn + "|" + pcov_body(promFinal) + "|reask=" + reask_flag(promReaskFired));
     print("PROMISE-UNCOVERED|" + pcov_uncovered(promFinal));
     if verdict == "FINDING" { print("PROMISE-BROKEN|" + promise_broken(runOut, invMatch)); }
+}
+// #2353 gate-budget readout, printed BEFORE the pinned marker; neither line carries an `INVARIANT|` substring.
+if gateBoundMs > 0 {
+    print("GATE-BOUND|" + targetFn + "|" + to_string(gateBoundMs) + "|" + gateBoundKind + "|cold=" + to_string(budget_field(gateBudget, "cold_build_ms")) + "|warm=" + to_string(budget_field(gateBudget, "warm_hit")));
+}
+if rc == 124 {
+    print("GATE-TIMEOUT|" + targetFn + "|" + to_string(gateBoundMs));
 }
 print("INVARIANT|" + targetFn + "|" + verdict);
 let steps = steps_of(runOut);

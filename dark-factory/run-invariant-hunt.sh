@@ -171,6 +171,19 @@
 #                        scheduler reads it to skip the remaining lenses of a target that does not compile. Default
 #                        OFF => no dir => the gate writes nothing => byte-identical.
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
+#
+# Env (#2353, the forge gate on a viaIR target):
+#   DF_INV_GATE_TIMEOUT_MS  Operator bound on each prover gate run, in ms (1-10 ASCII digits, no leading zero; 0 or
+#                        unset = none; anything else is warned about and ignored). Without it a viaIR target is
+#                        bounded at 600000 + max(cold_build_ms, prebuild_ms) measured by the prebuild below and a
+#                        non-viaIR target keeps today's unbounded gate under exec.default_timeout_ms = 600000.
+#   DF_FORGE_WARM_DIR    Where a viaIR prebuild publishes its warm record (default <out>/.forge-warm; STAGE 4.5 of
+#                        run-zone-hunt.sh points every cell of a deep-hunt stage at <out>/deep-hunt/.forge-warm).
+#   DF_FORGE_PREBUILD_MAX_S  Wall-clock bound on the viaIR prebuild, in seconds (default 7200; derivation in
+#                        evm-harness/forge-prebuild.sh).
+#   DF_FORGE_HEARTBEAT_S Heartbeat interval of the prebuild and of the bounded gate, in seconds (default 60).
+#                        An operator cell cap (DEEP_HUNT_CELL_TIMEOUT_S) on a viaIR root must cover one cold
+#                        build for the first cell of that root (numa-audit: 1801.59 s).
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -565,6 +578,56 @@ if [ -d "$HARNESS_MOCKS_SRC" ]; then
   done
 fi
 
+# #2353 — VIAIR PREBUILD + GATE BUDGET. The agentis exec bound for every prover exec stays INV_EXEC_DEFAULT_MS.
+# On a viaIR target (as `forge config --json` reports it) evm-harness/forge-prebuild.sh builds this staged repo
+# once per source project, shares the warm compiler cache with every later cell through DF_FORGE_WARM_DIR, and
+# prints the measured facts. Those facts (+ the validated DF_INV_GATE_TIMEOUT_MS override) go to the FIXED rundir
+# file gate-budget.txt, from which invariant-prover.ag derives a per-call bound for its forge gate only. A
+# non-viaIR target without an override gets no file => the prover's gate exec is byte-identical to today.
+INV_EXEC_DEFAULT_MS=600000
+PREBUILD_SH="$HERE/evm-harness/forge-prebuild.sh"
+PREBUILD_FACTS=""
+if [ -f "$PREBUILD_SH" ]; then
+  PREBUILD_FACTS="$(bash "$PREBUILD_SH" --repo "$REPO_IN_RUN" --source-repo "$REPO" \
+    --warm-dir "${DF_FORGE_WARM_DIR:-$OUT/.forge-warm}" --heartbeat "$RUN/.prebuild-heartbeat" \
+    --log "$RUN/prebuild.log" || true)"
+fi
+_pb_fact() {  # $1 = fact name -> its whole-number value, 0 when absent or malformed
+  _pbv="$(printf '%s\n' "$PREBUILD_FACTS" | sed -n "s/^$1=\([0-9][0-9]*\)\$/\1/p" | tail -1)"
+  printf '%s' "${_pbv:-0}"
+}
+_pb_via_ir="$(_pb_fact via_ir)"
+# #2353-GATE-OVERRIDE-BEGIN
+# DF_INV_GATE_TIMEOUT_MS: 1-10 ASCII digits, no leading zero (9999999999 ms is ~115.7 days, far above any real
+# bound, and adding the prover's 60000 ms backstop margin cannot overflow an i64). Matched under LC_ALL=C with an
+# explicit digit list so no locale digit class (fullwidth, Arabic-Indic) passes. 0 or empty = no override; any
+# other value is warned about and ignored (the #2103 fall-back semantics).
+GATE_OVERRIDE_MS=""
+_gate_ovr="${DF_INV_GATE_TIMEOUT_MS:-}"
+if [ -n "$_gate_ovr" ] && [ "$_gate_ovr" != "0" ]; then
+  if ( LC_ALL=C
+       case "$_gate_ovr" in *[!0123456789]*|0*) exit 1 ;; esac
+       [ "${#_gate_ovr}" -le 10 ] ); then
+    GATE_OVERRIDE_MS="$_gate_ovr"
+  else
+    echo "run-invariant-hunt.sh: DF_INV_GATE_TIMEOUT_MS must be 1-10 digits without a leading zero (got '$_gate_ovr') -- ignored" >&2
+  fi
+fi
+# #2353-GATE-OVERRIDE-END
+if [ "$_pb_via_ir" = 1 ] || [ -n "$GATE_OVERRIDE_MS" ]; then
+  {
+    echo "via_ir=$_pb_via_ir"
+    echo "base_ms=$INV_EXEC_DEFAULT_MS"
+    echo "cold_build_ms=$(_pb_fact cold_build_ms)"
+    echo "prebuild_ms=$(_pb_fact prebuild_ms)"
+    echo "prebuild_rc=$(_pb_fact prebuild_rc)"
+    echo "warm_hit=$(_pb_fact warm_hit)"
+    echo "override_ms=${GATE_OVERRIDE_MS:-0}"
+    echo "timeout_cmd=$(command -v timeout 2>/dev/null || true)"
+  } > "$RUN/gate-budget.txt"
+  echo "run-invariant-hunt.sh: [gate-budget] $(tr '\n' ' ' < "$RUN/gate-budget.txt")" >&2
+fi
+
 # #1763 G1: CORE-DEPENDENCY harness-gen. Only under --core-dep-harness do we run the mechanical (no-LLM)
 # detect-core-dep.sh over the target source + the staged repo copy. It emits EITHER EMPTY (no resolvable
 # delegatecall singleton) or one line `<abs_singleton_src>:<Name>:<addr>|<featureset>`; we split it at `|` into
@@ -776,11 +839,11 @@ fi
   # #1778: INV_ENSEMBLE_VARIANT (the per-candidate metamorphic-variant index; "" on the OFF/single path) is
   # APPENDED at the END so every existing demo's substring/allowlist assertion stays green.
   echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS,INV_CORE_DEP,INV_CORE_FEATURES,INV_ENSEMBLE_VARIANT"
-  # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
-  # #1915: intentionally left UNSCALED -- the observed composable-fresh timeout is on the generation LLM
-  # call (GEN_TIMEOUT_MS above), not the forge-run budget; bump this only if a future run shows a
-  # forge-run-side (not generation-side) timeout under composable mode.
-  echo "exec.default_timeout_ms = 600000"
+  # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default. The bound for
+  # every prover exec stays INV_EXEC_DEFAULT_MS (600000) on every target: #1915 left it unscaled for
+  # composable-fresh mode (that timeout was generation-side, GEN_TIMEOUT_MS above), and #2353 does not raise it
+  # for viaIR either -- the forge gate alone gets its own per-call bound from gate-budget.txt (written above).
+  echo "exec.default_timeout_ms = $INV_EXEC_DEFAULT_MS"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
   echo "learning.enabled = true"
   echo "experience.enabled = true"
@@ -991,6 +1054,9 @@ run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 =
       "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging --grant-pii ) >"$_celllog" 2>&1 || \
       echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $_celllog)" >&2
   release_forge_slot
+  # #2353: a bounded gate keeps its scratch dir in $RUN/.gate-tmp.* (forge-invariant.sh); one stopped by SIGKILL at its
+  # bound (timeout -k, the agentis backstop) leaves it behind. Sweep them here so stopped attempts never accumulate.
+  rm -rf "$RUN"/.gate-tmp.* 2>/dev/null || true
   # The prover's contract: exactly one `INVARIANT|<file:fn>|<verdict>` line, then (on a FINDING) `STEP|...` lines.
   # Take the LAST verdict match. No line at all = HARNESS_ERROR (no verdict produced).
   _vline="$(grep 'INVARIANT|' "$_celllog" | tail -1 || true)"
@@ -1017,9 +1083,17 @@ run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 =
       if grep -q 'LLM call timed out after' "$_celllog" 2>/dev/null; then
         echo "run-invariant-hunt.sh: [harness-error] generation LLM call timed out (see $_celllog) -- raise GEN_TIMEOUT_MS if this recurs" >&2
       fi
+      # #2353: purely diagnostic -- an agentis ExecTimeout aborts the prover and drops every earlier print.
+      if grep -q 'ExecTimeout: exec sh timed out after' "$_celllog" 2>/dev/null; then
+        echo "run-invariant-hunt.sh: [harness-error] agentis exec backstop fired (see $_celllog) -- raise DF_INV_GATE_TIMEOUT_MS" >&2
+      fi
     fi
   else
     _cverd="$(printf '%s' "$_vline" | sed 's/.*INVARIANT|//' | cut -d'|' -f2)"
+  fi
+  # #2353: purely diagnostic -- the bounded forge gate hit its bound (the prover printed GATE-TIMEOUT|).
+  if grep -q '^GATE-TIMEOUT|' "$_celllog" 2>/dev/null; then
+    echo "run-invariant-hunt.sh: [gate-timeout] the forge gate hit its bound $(grep '^GATE-TIMEOUT|' "$_celllog" | tail -1 | cut -d'|' -f3) ms (see $_celllog) -- raise DF_INV_GATE_TIMEOUT_MS" >&2
   fi
   case "$_cverd" in
     LOW_COVERAGE) ;;  # #2245 REACH: a CLEAN whose FINAL handler coverage was below the gate threshold — non-FINDING, terminal on --deep-hunt-resume, never merged

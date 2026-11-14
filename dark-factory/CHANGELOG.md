@@ -16,6 +16,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Deep invariant gate on viaIR targets (#2353).** On a Foundry project with viaIR enabled every deep cell ended
+  `HARNESS_ERROR`: the prover's forge gate ran under the fixed `exec.default_timeout_ms = 600000` while one cold
+  viaIR build of the staged repo took 1801.59 s on numa-audit, and every cell paid that cold build again.
+  - New shim `evm-harness/forge-prebuild.sh`: when `forge config --json` reports `via_ir`, `run-invariant-hunt.sh`
+    builds the staged repo once per source project, publishes the compiler cache file + the artifacts dir as a warm
+    record (`DF_FORGE_WARM_DIR`, default `<out>/.forge-warm`; STAGE 4.5 shares `<out>/deep-hunt/.forge-warm` across
+    all cells) and imports it into every later cell. `cache/invariant` never travels, so one cell's persisted
+    invariant failure cannot replay as a false FINDING in another cell. The build is bounded by
+    `DF_FORGE_PREBUILD_MAX_S` (default 7200 s wall clock: the 1848 s uncontended numa cold build at a solc share
+    down to about 26 % of one core; a contended heavy.slice gave solc 35-45 % and a 3600 s cap was hit) and only a
+    cold build takes a forge slot. A hung build holds its cell for up to 2 h before the fallback bound
+    (600000 + 7200000 = 7800000 ms) applies.
+  - `invariant-prover.ag` bounds its forge gate at `600000 + max(cold_build_ms, prebuild_ms)` from the new rundir
+    file `gate-budget.txt` (numa: 600000 + 1849000 = 2449000 ms from this change's 1848 s cold run; the earlier
+    1801.59 s measurement gave 2401590 ms) or at the operator override `DF_INV_GATE_TIMEOUT_MS`, through
+    coreutils `timeout` (graceful rc 124) inside an inline agentis backstop 60 s later, prints `GATE-BOUND|` /
+    `GATE-TIMEOUT|` before the verdict marker, and stops the repair loop on a gate timeout.
+  - A bounded gate keeps its scratch dir in the run dir (`.gate-tmp.*`) and the runner sweeps it after every prover
+    run, so a gate SIGKILLed at its bound (`timeout -k`, the agentis backstop) no longer leaves a dir in `$TMPDIR`.
+  - The prebuild and the bounded gate touch a heartbeat every `DF_FORGE_HEARTBEAT_S` (default 60 s) so the per-cell
+    staleness watchdog does not kill a compiling cell.
+  - Non-viaIR targets without the override are byte-identical: no prebuild, no `gate-budget.txt`, the same gate
+    exec, `exec.default_timeout_ms = 600000`. No deep-hunt budget scales automatically: an operator
+    `DEEP_HUNT_CELL_TIMEOUT_S` on a viaIR root must cover one cold build for the first cell of that root.
+  - Tests: `tools/test-invariant-viair-gate.sh` (stub forge; part B runs the real prover when `agentis` is on PATH).
+
 - **Slot gates over-admitted on Ubuntu 26.04; red `colony-lint` (#2362).** `lib/forge-slot.sh` and the deep-hunt
   cell's LLM pool (`tools/lib/llm-session-slot.sh`) decided slot ownership from the exit status of the external
   `mkdir`. uutils `mkdir` 0.8.0-0.10.0, `/usr/bin/mkdir` on the Ubuntu 26.04 CI runners since early November, exits 0
