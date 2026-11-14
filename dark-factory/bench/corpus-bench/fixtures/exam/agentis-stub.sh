@@ -18,6 +18,12 @@
 #                         (#2262 M3 review) the share-pool C1 cell's first <n> hunter calls SIGKILL the top-level
 #                         run-discovery.sh above them (an OOM kill / a `set -eu` abort mid-zone): the cell log stays
 #                         empty with no failure marker and run-zone-hunt.sh records the zone `failed` and CONTINUES.
+#   STUB_REPO_MUTATE=1    (#2372) the share-pool C1 cell's first hunter call writes into the repo it was handed
+#                         ($HUNT_SANDBOX_REPO, the arm's private copy): a leftover PoC test, forge-style build output,
+#                         an append to a tracked file, a moved file, a chmod +x, a new symlink and a commit in the
+#                         copy's .git. The isolation case proves none of it reaches the frozen base.
+#   STUB_BASE_WRITE=<dir> (#2372) the same call writes test/Leak.t.sol into <dir> (the base, behind the guard's back):
+#                         the post-run guard must VOID the arm.
 case "${1:-}" in
   init) mkdir -p .agentis; exit 0 ;;
   memo) exit 0 ;;
@@ -27,6 +33,24 @@ case "${1:-}" in
         if [ -n "${STUB_ENV_DUMP:-}" ]; then
           env >> "$STUB_ENV_DUMP"
           echo "--" >> "$STUB_ENV_DUMP"
+        fi
+        if [ "${SUBSYSTEM:-}" = "share pool" ] && [ "${HUNT_CLASS:-}" = "C1" ]; then
+          r="${HUNT_SANDBOX_REPO:-}"
+          if [ "${STUB_REPO_MUTATE:-}" = 1 ] && [ -n "$r" ] && [ ! -e "$r/test/Leftover.t.sol" ]; then
+            mkdir -p "$r/test" "$r/out/build-info" "$r/docs"
+            echo "contract LeftoverPoc {}" > "$r/test/Leftover.t.sol"
+            echo "{}" > "$r/out/build-info/x.json"
+            echo "// stub edit" >> "$r/src/pool/Pool.sol"
+            mv "$r/README.md" "$r/docs/README.moved.md"
+            chmod +x "$r/foundry.toml"
+            ln -s src/pool/Pool.sol "$r/pool-link.sol"
+            git -C "$r" add -A > /dev/null 2>&1
+            git -C "$r" -c user.email=stub@example.invalid -c user.name=stub commit -qm leftover > /dev/null 2>&1
+          fi
+          if [ -n "${STUB_BASE_WRITE:-}" ]; then
+            mkdir -p "$STUB_BASE_WRITE/test"
+            echo "contract LeakPoc {}" > "$STUB_BASE_WRITE/test/Leak.t.sol"
+          fi
         fi
         if [ -n "${STUB_SLEEP:-}" ]; then sleep "$STUB_SLEEP"; fi
         if [ -n "${STUB_KILL_CALLS:-}" ] && [ -n "${STUB_KILL_STATE:-}" ] \

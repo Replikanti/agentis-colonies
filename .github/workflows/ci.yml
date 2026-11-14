@@ -15,5 +15,25 @@ jobs:
       - name: Install shellcheck (required by colony-lint)
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
+      # #2372: the exam self-test (colony-lint -> demo-holdout-exam.sh) runs exam-guard.ag through a real agentis
+      # binary, and on CI a missing binary FAILS it. This installs the LATEST storefront release (the release
+      # install.sh and `agentis update` fetch; no version or hash pinned here), checked against that release's own
+      # published sha256, OUTSIDE PATH: only EXAM_GUARD_AGENTIS sees it, so the checks that skip without agentis
+      # on PATH stay unchanged.
+      - name: Install agentis for the exam guard (latest release, sha256-checked, outside PATH)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          d="$RUNNER_TEMP/agentis"
+          mkdir -p "$d"
+          cd "$d"
+          gh release download -R Replikanti/agentis -p agentis-linux-x86_64 -p agentis-linux-x86_64.sha256
+          sha256sum -c agentis-linux-x86_64.sha256
+          mv agentis-linux-x86_64 agentis
+          chmod +x agentis
+          ./agentis --version
+          echo "EXAM_GUARD_AGENTIS=$d/agentis" >> "$GITHUB_ENV"
+
       - name: Run colony-lint
         run: ./tools/colony-lint.sh

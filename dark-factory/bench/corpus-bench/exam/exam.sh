@@ -16,14 +16,15 @@
 # Subcommands:
 #   freeze   --base <dir> --contest <id> --checkout <tool-checkout> --profile <p>
 #            (--code-subdir <rel> | --project-roots <csv|auto>) [--map-fixture <f> --brief-fixture <f>]
-#            [--force] [--allow-fallback-briefs] [--deny-pattern <ERE>]... [--agentis <bin>]
+#            [--force] [--allow-fallback-briefs] [--deny-pattern <ERE>]... [--agentis <bin>] [--accept <rel>]... [--no-git]
 #            Expects <base>/<id>/{code/,truth.tsv} (run-corpus-bench.sh --fetch --gt --id <id> --work <base>).
 #            Refuses a dirty checkout and one whose prompt-visible files carry `corpus-bench` or a delimited
 #            finding-id token (the colony-lint #2231 rules). Runs map-zones.sh + gen-briefs.sh FROM THE CHECKOUT
 #            with the profile's BACKEND/MODEL, refuses mechanical-fallback briefs, greps map/ + briefs/ for
 #            contamination, then writes <base>/<id>/freeze.sha256 + freeze.meta. --project-roots (#2255) maps a
 #            MULTI-PROJECT clone from its root (`auto` = map-zones.sh's own detection); --code-subdir maps one
-#            project dir. The frozen base is never written again by any other subcommand.
+#            project dir. The frozen base is never written again by any other subcommand. Ends with `seal` (#2372;
+#            --accept / --no-git pass through, --force re-seals).
 #   adopt    --base <dir> --contest <id> --legacy-sha <file> --checkout-commit <sha> --model <id>
 #            (--code-subdir <rel> | --project-roots <csv|auto>) [--force] [--deny-pattern <ERE>]...
 #            #2311: adopt a base frozen by the legacy host-only harness. Verifies every file under map/ + briefs/
@@ -31,6 +32,18 @@
 #            be equal — exit 3 on any mismatch), runs the freeze contamination grep (exit 4), then writes
 #            freeze.sha256 + freeze.meta (adopted=1, the recorded checkout commit + model). Never touches map/ or
 #            briefs/; a second adopt (or one over a freeze) is refused without --force, which rewrites only those two.
+#            Ends with `seal` like freeze ([--accept <rel>]... [--no-git] pass through).
+#   seal     --base <dir> --contest <id> [--accept <rel>]... [--no-git] [--force]
+#            #2372: seals <base>/<id>/code into <base>/<id>/{code.manifest, code.seal, code.setup.txt} (never into
+#            code/): path, type, mode, link target and sha256 of every entry, .git/ and node_modules/ included. Fail
+#            closed: every difference from the git HEAD outside node_modules/ (tracked edits, untracked and ignored
+#            paths, a submodule commit) and every symlink that is absolute or resolves outside the tree must be named
+#            with --accept (an exact path relative to code/, or a dir ending in /); renames, unmerged paths, an empty
+#            tree, a non-git tree without --no-git and a second seal without --force are refused (exit 3). The
+#            logic is exam-guard.ag (a one-shot agent; needs agentis >= 1.32.0 as EXAM_GUARD_AGENTIS or on PATH).
+#   guard    --base <dir> --contest <id> [--list]
+#            #2372: compares <base>/<id>/code with its seal: exit 0 clean, exit 3 on drift (every drifting path with
+#            its class, the first 100 lines; --list: all; the full list in <base>/<id>/code.drift.txt) or on any error.
 #   plan     --base <dir> --contest <id> --arm <label> --repeat <n> --profile <p> --checkout <dir>
 #            [--zones <id,...> | --whole]
 #            Prints a plan TSV (`contest zone arm repeat profile checkout base`): one row per zone of the frozen
@@ -45,8 +58,11 @@
 #            text and an anchor outside the frozen map. Ladder schema + rules: exam-helper.py ladder-check.
 #   stage    --root <root> --base <dir> --contest <id> --zone <id|_all> --arm <label> --repeat <n>
 #            --profile <p> --checkout <dir> [--pointer <rung>:<ptr_id>:<ladder>]
-#            Verifies freeze.sha256 (exit 3 on drift), refuses an arm whose run is still alive, COPIES map/ +
-#            briefs/ into the arm dir, SYMLINKS code/, keeps truth.tsv + judging/ ONLY in the sibling _gt/<contest>/
+#            Verifies freeze.sha256 (exit 3 on drift) and (#2372) the base code tree against its seal (exit 3 on drift,
+#            listing every drifting path; a live arm on a tmpfs exam root is refused), refuses an arm whose run is
+#            still alive, COPIES map/ + briefs/ into the arm dir, gives the arm a PRIVATE COPY of code/ (`cp -a
+#            --reflink=auto`: a reflink where the filesystem has one, recorded as stage.meta code_copy=reflink|full)
+#            checked against the seal, keeps truth.tsv + judging/ ONLY in the sibling _gt/<contest>/
 #            scoring view, filters zones.json to that zone (`_all` keeps every zone), appends the
 #            profile's INJECT_CLASSES to the zone's scope.tsv class field once each (no classes = byte-identical),
 #            runs lib/zone-coverage.py init and checks `gaps` yields exactly the staged zone(s).
@@ -58,6 +74,12 @@
 #            — writes <arm>/pointer.txt (the L0 block) and records the ladder + rung sha256 in stage.meta. Without
 #            --pointer every staged file is byte-identical to before #2311.
 #   run      (the stage args) [--agentis <bin>]
+#            #2372: the hunt (breadth, re-hunt, STAGE 4.5) gets the arm's private copy as --repo; run refuses a copy
+#            that drifted from the seal after stage (guard-drift.txt) and an arm staged before #2372. After the hunt
+#            (every exit path with a trap) the guard checks the BASE again: a base that changed during the arm VOIDs
+#            it (void.operator `exam-guard base-drift`, base-drift.txt; a guard that cannot decide VOIDs it too), and
+#            the arm's own writes into its copy are kept as repo-delta.tsv. run.meta records code_copy,
+#            code_manifest_sha256, base_guard_after=ok|drift:<n>|error, repo_delta=+<a> ~<m> -<d>|error.
 #            Breadth: `timeout HARD_STOP_S run-zone-hunt.sh --rehunt-gaps` with the profile's env.* knobs.
 #            One-shot RE-HUNT (M3, REHUNT_TRANSPORT=1, the default): when a final-attempt cell carries .timeout /
 #            .novalid or a `transport` void pattern and no `weekly-limit` pattern matched, exactly ONE more
@@ -118,6 +140,7 @@
 #            pattern-matching process killer, which would match its own command line.
 #   self-test
 #            Offline end-to-end check over fixtures/exam/ (stub agentis, --backend mock; no LLM, no network).
+#            Every guard call in it runs the real exam-guard.ag through EXAM_GUARD_AGENTIS (else agentis on PATH).
 #
 # <p> (a profile) is a shipped name (`control`, `exam`, `exam-plus`, `mock` = profiles/<name>.env) or a path to
 # a profile file. Grammar + knob hygiene: see exam-helper.py and profiles/control.env. The three Claude Code
@@ -132,10 +155,14 @@
 #                                                       attrib.tsv void.txt [void.operator] .done
 #                                                       run.pid (while alive) breadth.env deep.env env.cleared
 #   <root>/arms/<contest>/<zone>/<arm>-r<N>.void-<k>/   a VOID attempt moved aside by drive --retry-void
-#       <contest>/{code -> base, zone-hunt-out/}        what the hunt is pointed at
+#                                                       #2372: .guard.meta repo-delta.tsv [guard-drift.txt]
+#                                                       [base-drift.txt]
+#       <contest>/{code/ (private copy), zone-hunt-out/} what the hunt is pointed at
 #       _gt/<contest>/{truth.tsv, judging -> base, zone-hunt-out -> ../../<contest>/zone-hunt-out}
 #   <root>/triage/<contest>-<arm>-r<N>.{tsv,md}
 # Score one arm with `generation-recall.sh --from-work <arm-dir>/_gt --id <contest>`.
+# A frozen base: <base>/<contest>/{code/, truth.tsv, map/, briefs/, freeze.*, code.manifest, code.seal, code.setup.txt,
+# [code.drift.txt]}. A base that drifted during an arm VOIDs it with class `operator` and an `exam-guard` reason.
 #
 # Needs bash, python3, git, GNU `timeout`, setsid and /proc (Linux); bwrap for a live backend. Exit: 0 ok; 1 a self-test / kill check failed;
 # 2 usage or profile error; 3 missing prerequisite, dirty / contaminated checkout, drift, refused overwrite or a
@@ -152,6 +179,7 @@ CB_DIR="$(cd "$EXAM_DIR/.." && pwd)"
 TRIAGE="$CB_DIR/triage.py"
 ATTRIB_PY="$CB_DIR/model-attribution.py"
 PATTERNS="$EXAM_DIR/void-patterns.tsv"
+GUARD_AG="${EXAM_TEST_GUARD_AG:-$EXAM_DIR/exam-guard.ag}"   # the seam swaps in a self-test variant only
 SAFE_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 
 # Measurement integrity for every model call this runner starts: a refusal or a model fallback is an ERROR,
@@ -263,6 +291,46 @@ arm_live() {
 SHA256_CMD="sha256sum"; command -v sha256sum >/dev/null 2>&1 || SHA256_CMD="shasum -a 256"
 # shellcheck disable=SC2086  # SHA256_CMD is a command + its flags, split on purpose
 file_sha() { $SHA256_CMD "$1" | cut -d' ' -f1; }
+
+# ----------------------------------------------------------------------------------------------------------
+# the code-tree guard (#2372): exam-guard.ag, a one-shot agent
+# ----------------------------------------------------------------------------------------------------------
+# guard_ag <mode> <contest> <cdir> [<armdir>] [<root>] [<live 0|1>] — runs exam-guard.ag once and returns its exit
+# status. Every decision (seal accept rules, compare, drift classes, listing, refuse / VOID) is in the agent; this
+# shim only starts the runtime, which cannot run inside itself: a throwaway workspace, its config (mock backend, the
+# env allowlist below, no stdout cap, the string-heap and disk limits a real tree needs), one `agentis go`. The
+# agent's binary is EXAM_GUARD_AGENTIS (default: agentis on PATH), separate from `--agentis` (the hunt's binary,
+# the self-test stub). G_ACCEPT / G_FORCE / G_NOGIT / G_LIST carry the seal + guard flags.
+G_ACCEPT=(); G_FORCE=0; G_NOGIT=0; G_LIST=0
+guard_ag() {
+  local mode="$1" contest="$2" cdir="$3" armdir="${4:-}" root="${5:-}" live="${6:-0}" bin ws rc
+  bin="${EXAM_GUARD_AGENTIS:-$(command -v agentis 2>/dev/null)}"
+  if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+    note "exam-guard: no agentis binary for the guard (set EXAM_GUARD_AGENTIS or put agentis >= 1.32.0 on PATH)"; return 3
+  fi
+  [ -f "$GUARD_AG" ] || { note "exam-guard: $GUARD_AG missing"; return 3; }
+  ws="$(mktemp -d "${TMPDIR:-/tmp}/exam-guard.XXXXXX")" || return 3
+  if ! (cd "$ws" && "$bin" init) > /dev/null 2>&1 || [ ! -d "$ws/.agentis/sandbox" ]; then
+    note "exam-guard: agentis init failed ($bin)"; rm -rf "$ws"; return 3
+  fi
+  {
+    echo "llm.backend = mock"
+    echo "exec.sandbox_profile = basic"
+    echo "exec.env_passthrough = EXAM_GUARD_MODE,EXAM_GUARD_CDIR,EXAM_GUARD_ARMDIR,EXAM_GUARD_CONTEST,EXAM_GUARD_ROOT,EXAM_GUARD_LIVE,EXAM_GUARD_FORCE,EXAM_GUARD_NO_GIT,EXAM_GUARD_FULL_LIST,EXAM_TEST_FORCE_TMPFS"
+    echo "exec.stdout_max_bytes = ${EXAM_TEST_GUARD_STDOUT_MAX:-0}"
+    echo "limits.max_string_heap_bytes = 1073741824"
+    echo "limits.max_disk_bytes = 268435456"
+  } >> "$ws/.agentis/config"
+  printf '%s\0' ${G_ACCEPT[@]+"${G_ACCEPT[@]}"} > "$ws/.agentis/sandbox/accept.lst"
+  cp "$GUARD_AG" "$ws/exam-guard.ag" || { rm -rf "$ws"; return 3; }
+  (cd "$ws" && exec env EXAM_GUARD_MODE="$mode" EXAM_GUARD_CDIR="$cdir" EXAM_GUARD_ARMDIR="$armdir" \
+      EXAM_GUARD_CONTEST="$contest" EXAM_GUARD_ROOT="$root" EXAM_GUARD_LIVE="$live" EXAM_GUARD_FORCE="$G_FORCE" \
+      EXAM_GUARD_NO_GIT="$G_NOGIT" EXAM_GUARD_FULL_LIST="$G_LIST" EXAM_TEST_FORCE_TMPFS="${EXAM_TEST_FORCE_TMPFS:-}" \
+      "$bin" go exam-guard.ag --enable-exec) >&2   # no-pii: exam-guard.ag makes no prompt() call
+  rc=$?
+  rm -rf "$ws"
+  return "$rc"
+}
 
 # The frozen artifact manifest: sha256 of every file under map/ + briefs/, sorted relative paths.
 freeze_manifest() {
@@ -420,6 +488,8 @@ cmd_freeze() {
       --agentis) need_val "$#" "$1"; agentis="$2"; shift 2 ;;
       --force) force=1; shift ;;
       --allow-fallback-briefs) allow_fb=1; shift ;;
+      --accept) need_val "$#" "$1"; G_ACCEPT+=("$2"); shift 2 ;;
+      --no-git) G_NOGIT=1; shift ;;
       *) die 2 "freeze: unknown flag $1" ;;
     esac
   done
@@ -546,6 +616,9 @@ cmd_freeze() {
     echo "frozen_utc=$(utc)"
   } > "$cdir/freeze.meta"
   note "freeze: $contest frozen ($(wc -l < "$cdir/freeze.sha256") files, commit $commit, roots $map_roots)"
+  G_FORCE="$force"
+  guard_ag seal "$contest" "$cdir" \
+    || die 3 "freeze: sealing $cdir/code failed (see above) — stage refuses this base until \`exam.sh seal\` succeeds"
 }
 
 # ----------------------------------------------------------------------------------------------------------
@@ -565,6 +638,8 @@ cmd_adopt() {
       --project-roots) need_val "$#" "$1"; roots="$2"; shift 2 ;;
       --deny-pattern) need_val "$#" "$1"; deny+=("$2"); shift 2 ;;
       --force) force=1; shift ;;
+      --accept) need_val "$#" "$1"; G_ACCEPT+=("$2"); shift 2 ;;
+      --no-git) G_NOGIT=1; shift ;;
       *) die 2 "adopt: unknown flag $1" ;;
     esac
   done
@@ -625,6 +700,47 @@ cmd_adopt() {
     echo "adopted_utc=$(utc)"
   } > "$cdir/freeze.meta"
   note "adopt: $contest adopted ($(wc -l < "$cdir/freeze.sha256") files verified against $(basename "$legacy"), commit $commit, roots $map_roots)"
+  G_FORCE="$force"
+  guard_ag seal "$contest" "$cdir" \
+    || die 3 "adopt: sealing $cdir/code failed (see above) — stage refuses this base until \`exam.sh seal\` succeeds"
+}
+
+# ----------------------------------------------------------------------------------------------------------
+# seal / guard (#2372): the base code tree's content manifest, and a check against it
+# ----------------------------------------------------------------------------------------------------------
+cmd_seal() {
+  local base="" contest=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --base) need_val "$#" "$1"; base="$2"; shift 2 ;;
+      --contest) need_val "$#" "$1"; contest="$2"; shift 2 ;;
+      --accept) need_val "$#" "$1"; G_ACCEPT+=("$2"); shift 2 ;;
+      --no-git) G_NOGIT=1; shift ;;
+      --force) G_FORCE=1; shift ;;
+      *) die 2 "seal: unknown flag $1" ;;
+    esac
+  done
+  [ -n "$base" ] && [ -n "$contest" ] || die 2 "seal: --base --contest are required"
+  safe_id "$contest" || die 2 "seal: bad contest id '$contest'"
+  base="$(abs_dir "$base")" || die 3 "seal: --base not found"
+  [ -e "$base/$contest/code" ] || [ -L "$base/$contest/code" ] || die 3 "seal: $base/$contest/code missing"
+  guard_ag seal "$contest" "$base/$contest" || die 3 "seal: refused (see above)"
+}
+
+cmd_guard() {
+  local base="" contest=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --base) need_val "$#" "$1"; base="$2"; shift 2 ;;
+      --contest) need_val "$#" "$1"; contest="$2"; shift 2 ;;
+      --list) G_LIST=1; shift ;;
+      *) die 2 "guard: unknown flag $1" ;;
+    esac
+  done
+  [ -n "$base" ] && [ -n "$contest" ] || die 2 "guard: --base --contest are required"
+  safe_id "$contest" || die 2 "guard: bad contest id '$contest'"
+  base="$(abs_dir "$base")" || die 3 "guard: --base not found"
+  guard_ag check-base "$contest" "$base/$contest" || exit 3
 }
 
 # ----------------------------------------------------------------------------------------------------------
@@ -747,10 +863,11 @@ parse_arm_args() {
 
 arm_dir() { printf '%s/arms/%s/%s/%s-r%s\n' "$1" "$2" "$3" "$4" "$5"; }
 
-# The contest's code dir as the hunt sees it (freeze.meta code_dir_rel under <cdir>/code).
+# The contest's code dir as the hunt sees it: freeze.meta code_dir_rel under <code root> (default <cdir>/code; #2372: an
+# arm passes its private copy <arm>/<contest>/code).
 code_dir_of() {
-  local rel; rel="$(meta_get "$1/freeze.meta" code_dir_rel)"
-  if [ -z "$rel" ] || [ "$rel" = . ]; then printf '%s/code\n' "$1"; else printf '%s/code/%s\n' "$1" "$rel"; fi
+  local rel root="${2:-$1/code}"; rel="$(meta_get "$1/freeze.meta" code_dir_rel)"
+  if [ -z "$rel" ] || [ "$rel" = . ]; then printf '%s\n' "$root"; else printf '%s/%s\n' "$root" "$rel"; fi
 }
 
 # #2311: a POINTED stage (stage --pointer <rung>:<ptr_id>:<ladder>) — the brief / scope.tsv / zones.json edits of
@@ -775,7 +892,7 @@ stage_pointer() {
   # reach-targets' --max is irrelevant to the question asked (does ANY concrete target exist?); 3 mirrors REACH_N.
   local reach deep_target
   reach="$(cd "$df" && env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} python3 lib/inheritance.py reach-targets --zones "$narrowed" \
-             --repo "$(code_dir_of "$cdir")" --max 3 2>> "$slog")" || die 3 "stage: reach-targets failed on the anchor files (see $slog)"
+             --repo "$(code_dir_of "$cdir" "$armdir/$A_CONTEST/code")" --max 3 2>> "$slog")" || die 3 "stage: reach-targets failed on the anchor files (see $slog)"
   if printf '%s\n' "$reach" | awk -F'\t' -v z="$A_ZONE" '$1 == z { f = 1 } END { exit f ? 0 : 1 }'; then
     mv "$narrowed" "$out/map/zones.json" || die 3 "stage: cannot narrow zones.json"
     deep_target=anchor
@@ -805,6 +922,10 @@ cmd_stage() {
     die 3 "stage: the frozen base $cdir DRIFTED from freeze.sha256 — refusing to stage (re-freeze or restore it)"
   fi
   load_profile "$A_PROFILE"
+  # #2372: the base code tree must match its seal before anything is staged from it (and a live arm never on tmpfs).
+  local live=0; [ "$P_BACKEND" = mock ] || live=1
+  guard_ag stage-check "$A_CONTEST" "$cdir" "" "$A_ROOT" "$live" \
+    || die 3 "stage: the exam guard refused the base $cdir/code (see above) — nothing was staged"
   local armdir; armdir="$(arm_dir "$A_ROOT" "$A_CONTEST" "$A_ZONE" "$A_ARM" "$A_REPEAT")"
   if arm_live "$armdir"; then
     die 3 "stage: $armdir has a LIVE run (pid $(head -1 "$armdir/run.pid")) — refusing to start a second writer"
@@ -825,10 +946,12 @@ cmd_stage() {
   mkdir -p "$gt" || die 3 "stage: cannot create $gt"
   cp -a "$cdir/map" "$out/map" && cp -a "$cdir/briefs" "$out/briefs" && cp "$cdir/truth.tsv" "$gt/truth.tsv" \
     || die 3 "stage: copying the frozen base failed"
-  ln -s "$cdir/code" "$armdir/$A_CONTEST/code"
+  # #2372: the arm's PRIVATE copy of the code tree (a reflink where the filesystem has one), checked against the seal.
+  guard_ag stage-copy "$A_CONTEST" "$cdir" "$armdir" "$A_ROOT" "$live" 2>> "$slog" \
+    || die 3 "stage: the private code copy failed (see $slog)"
   [ ! -e "$cdir/judging" ] || ln -s "$cdir/judging" "$gt/judging"
   ln -s "../../$A_CONTEST/zone-hunt-out" "$gt/zone-hunt-out"
-  slogf "copied map/ briefs/ from $cdir, truth.tsv into _gt/$A_CONTEST/; code/ (+ _gt judging/) symlinked read-only"
+  slogf "copied map/ briefs/ from $cdir, truth.tsv into _gt/$A_CONTEST/; code/ copied privately ($(meta_get "$armdir/.stage.copy" code_copy)); _gt judging/ symlinked read-only"
   clear_knobs "$A_PROFILE" "$df" "$armdir/stage.env-cleared"
   local zones_json="$out/map/zones.json" scope="$out/map/scope.tsv" name
   if [ "$A_ZONE" != _all ]; then
@@ -869,6 +992,7 @@ cmd_stage() {
   if [ -f "$armdir/.stage.pointer" ]; then
     cat "$armdir/.stage.pointer" >> "$armdir/stage.meta" && rm -f "$armdir/.stage.pointer"
   fi
+  cat "$armdir/.stage.copy" >> "$armdir/stage.meta" && rm -f "$armdir/.stage.copy"
   note "stage: [$A_CONTEST $A_ZONE $A_ARM r$A_REPEAT] staged -> $armdir"
 }
 
@@ -903,6 +1027,14 @@ run_on_signal() {
 run_finish() {
   local rc=$? end meta
   [ -n "$R_RC" ] || R_RC="$rc"
+  # #2372: did the base stay byte-identical during this arm (else void.operator), and what did the arm write into
+  # its copy (repo-delta.tsv)? Fail closed: a guard that could not decide VOIDs the arm.
+  if ! guard_ag post-run "$A_CONTEST" "$A_BASE/$A_CONTEST" "$R_ARMDIR" "$A_ROOT" 2>> "$R_ARMDIR/run.log"; then
+    [ -e "$R_ARMDIR/void.operator" ] \
+      || echo "exam-guard base-unverified: the post-run guard did not finish (see run.log)" > "$R_ARMDIR/void.operator"
+    printf 'code_copy=%s\ncode_manifest_sha256=%s\nbase_guard_after=error\nrepo_delta=error\nguard_cb_spent=-\n' \
+      "$(meta_get "$R_ARMDIR/stage.meta" code_copy)" "$(meta_get "$R_ARMDIR/stage.meta" code_manifest_sha256)" > "$R_ARMDIR/.guard.meta"
+  fi
   end="$(utc)"
   meta="$R_ARMDIR/run.meta"
   # #2277: did STAGE 4.5 measure every root? (read from the zone hunt's deep-hunt-status.tsv; never a VOID)
@@ -931,6 +1063,7 @@ run_finish() {
       echo "pointer_id=$R_PTR_ID"; echo "pointer_rung=$R_PTR_RUNG"; echo "pointer_sha256=$R_PTR_SHA"
       echo "deep_audit_context=$R_DEEP_CTX"
     fi
+    cat "$R_ARMDIR/.guard.meta"
   } > "$meta.tmp" && mv "$meta.tmp" "$meta"
   # M3: attribution over the run window, then the VOID verdict — both before the MANIFEST row and .done, so a
   # finished arm always carries them.
@@ -967,7 +1100,8 @@ cmd_run() {
   [ -f "$cdir/freeze.meta" ] || die 3 "run: $cdir is not frozen"
   local code_rel; code_rel="$(meta_get "$cdir/freeze.meta" code_dir_rel)"
   R_ROOTS="$(meta_get "$cdir/freeze.meta" project_roots)"; [ -n "$R_ROOTS" ] || R_ROOTS="-"
-  R_CODE="$cdir/code"; [ -z "$code_rel" ] || [ "$code_rel" = . ] || R_CODE="$cdir/code/$code_rel"
+  # #2372: the hunt is pointed at the arm's private copy, never at the base.
+  R_CODE="$R_ARMDIR/$A_CONTEST/code"; [ -z "$code_rel" ] || [ "$code_rel" = . ] || R_CODE="$R_ARMDIR/$A_CONTEST/code/$code_rel"
   [ -d "$R_CODE" ] || die 3 "run: code dir $R_CODE missing"
   load_profile "$A_PROFILE"
   need_sandbox
@@ -992,7 +1126,7 @@ cmd_run() {
   case "$P_SCOPE_DOCS" in
     "") ;;
     auto) scope_docs=auto ;;
-    code:*) scope_docs="$cdir/code/${P_SCOPE_DOCS#code:}"
+    code:*) scope_docs="$R_ARMDIR/$A_CONTEST/code/${P_SCOPE_DOCS#code:}"
             [ -f "$scope_docs" ] || die 3 "run: SCOPE_DOCS file $scope_docs missing" ;;
   esac
   R_COMMIT="$(git -C "$A_CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -1006,6 +1140,9 @@ cmd_run() {
   case "$R_ROOTS" in -|auto) ;; *) common+=(--project-roots "$R_ROOTS") ;; esac
   local -a breadth=(--rehunt-gaps --jobs "$P_JOBS")
   [ -z "$scope_docs" ] || breadth+=(--scope-docs "$scope_docs")
+  # #2372: no hunt call starts on a copy that drifted after stage (or an arm staged before the private copy).
+  guard_ag pre-hunt "$A_CONTEST" "$cdir" "$R_ARMDIR" "$A_ROOT" 2>> "$R_ARMDIR/run.log" \
+    || die 3 "run: the exam guard refused the arm's private copy (see $R_ARMDIR/run.log)"
 
   echo "$$" > "$R_ARMDIR/run.pid"
   trap run_finish EXIT
@@ -1290,7 +1427,7 @@ cmd_drive() {
     # #2291: exam-helper.py and model-attribution.py import the ONE usage-limit regex (dark-factory/lib/usage_limit.py);
     # the snapshot carries a copy next to each of them (a script's own dir is on its import path), so the regex is
     # frozen with the rest of the runner.
-    cp "$SELF" "$HELPER" "$PATTERNS" "$CB_DIR/../../lib/usage_limit.py" "$snap/exam/" && cp -R "$PROFILES_DIR" "$snap/exam/profiles" \
+    cp "$SELF" "$HELPER" "$PATTERNS" "$EXAM_DIR/exam-guard.ag" "$CB_DIR/../../lib/usage_limit.py" "$snap/exam/" && cp -R "$PROFILES_DIR" "$snap/exam/profiles" \
       && cp "$TRIAGE" "$ATTRIB_PY" "$CB_DIR/score-match.py" "$CB_DIR/hypotheses-to-leads.py" "$CB_DIR/../../lib/usage_limit.py" "$snap/" \
       || die 3 "drive: snapshot copy failed"
     note "drive: re-exec from the snapshot $snap"
@@ -1550,6 +1687,432 @@ cmd_self_test() {
     bad "plan --whole did not give one _all row"
   fi
 
+  echo "exam.sh self-test: repo isolation (#2372)"
+  # Every guard call below runs the REAL exam-guard.ag through the real agentis binary (EXAM_GUARD_AGENTIS or PATH);
+  # only the hunt runs on the stub. The base layout is the host's: <base>/fx/code is a symlink to a separate git tree.
+  local it="$work/itree" ib="$work/ibase" ic="$work/ibase/fx" iref="$work/itree.ref" iroot="$work/iroot"
+  local greal="${EXAM_GUARD_AGENTIS:-$(command -v agentis 2>/dev/null)}"
+  mkdir -p "$it" "$ic" && cp -R "$fix/project/." "$it/" && mkdir -p "$it/test" && echo 'contract BaseTest {}' > "$it/test/Base.t.sol" \
+    && git -C "$it" init -q && git -C "$it" config user.email t@example.invalid && git -C "$it" config user.name t \
+    && git -C "$it" add -A && git -C "$it" commit -qm tree && ln -s "$it" "$ic/code" && cp "$fix/truth.tsv" "$ic/truth.tsv" \
+    || die 3 "self-test: cannot build the isolation tree"
+  bash "$SELF" freeze --base "$ib" --contest fx --checkout "$co" --profile mock --code-subdir . \
+    --map-fixture "$fix/zones.fixture.txt" --brief-fixture "$fix/briefs.fixture.txt" --agentis "$stub" > "$work/ifreeze.out" 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ] && [ -f "$ic/code.seal" ] && [ -f "$ic/code.manifest" ] && [ -f "$ic/code.setup.txt" ] && [ ! -e "$it/code.seal" ] \
+     && [ "$(meta_get "$ic/code.seal" code_phys)" = "$(cd "$it" && pwd -P)" ] \
+     && [ "$(meta_get "$ic/code.seal" git_head)" = "$(git -C "$it" rev-parse HEAD)" ]; then
+    ok "seal: freeze seals the base (code.seal + code.manifest + code.setup.txt next to code/, never inside it; code_phys = the physical tree, git_head recorded)"
+  else
+    bad "seal: freeze did not seal the base (exit $rc)"; tail -5 "$work/ifreeze.out" | sed 's/^/         | /'
+  fi
+  cp -a "$it" "$iref"   # the oracle reference: independent of exam-guard.ag
+
+  # AC 1: a mutating arm leaves the base byte-identical.
+  local ia="$iroot/arms/fx/src_pool/iso-r1"
+  bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_pool --arm iso --repeat 1 --profile mock \
+    --checkout "$co" > "$work/istage.out" 2>&1; expect_rc 0 $? "isolation: stage the arm (a private copy of the code tree)"
+  STUB_REPO_MUTATE=1 bash "$SELF" run --root "$iroot" --base "$ib" --contest fx --zone src_pool --arm iso --repeat 1 \
+    --profile mock --checkout "$co" --agentis "$stub" > "$work/irun.out" 2>&1; rc=$?
+  # posix-portability: deferred (exam.sh is Linux-only: it needs /proc and GNU timeout; GNU find -printf is the oracle)
+  lsl() { (cd "$1" && find . -printf '%y %m %s %P\n' | LC_ALL=C sort); }
+  local idelta; idelta="$(grep -v $'\t\\./\\.git/' "$ia/repo-delta.tsv" 2>/dev/null)"
+  local iwant; iwant="$(printf '%s\n' $'added dir (1 entries)\t./docs/' $'added dir (2 entries)\t./out/' $'added\t./pool-link.sol' \
+    $'added\t./test/Leftover.t.sol' $'removed\t./README.md' $'modified(content)\t./src/pool/Pool.sol' $'modified(mode 644→755)\t./foundry.toml')"
+  if [ "$rc" -eq 0 ] && diff -r --no-dereference "$iref" "$it" > /dev/null 2>&1 && [ "$(lsl "$iref")" = "$(lsl "$it")" ] \
+     && [ -f "$ia/fx/code/test/Leftover.t.sol" ] && [ -L "$ia/fx/code/pool-link.sol" ] && [ -x "$ia/fx/code/foundry.toml" ] \
+     && [ "$idelta" = "$iwant" ] && grep -q $'\t\\./\\.git/' "$ia/repo-delta.tsv" \
+     && [ "$(meta_get "$ia/run.meta" code)" = "$ia/fx/code" ] && [ "$(meta_get "$ia/run.meta" base_guard_after)" = ok ] \
+     && [ "$(meta_get "$ia/run.meta" repo_delta)" = "+$(grep -c '^added' "$ia/repo-delta.tsv") ~$(grep -c '^modified' "$ia/repo-delta.tsv") -$(grep -c '^removed' "$ia/repo-delta.tsv")" ] \
+     && [ "$(head -1 "$ia/void.txt")" = VALID ]; then
+    ok "isolation: a mutating mock arm leaves the base byte-identical (diff -r + find listing vs a pre-run copy); the copy holds every mutation, repo-delta.tsv lists exactly them (+ the copy's own .git writes), run.meta code= is the copy, base_guard_after=ok, VALID"
+  else
+    bad "isolation (exit $rc): base_guard_after=$(meta_get "$ia/run.meta" base_guard_after) repo_delta=$(meta_get "$ia/run.meta" repo_delta) void=$(head -1 "$ia/void.txt" 2>/dev/null)"
+    diff -r --no-dereference "$iref" "$it" 2>&1 | head -5 | sed 's/^/         | base: /'
+    printf '%s\n' "$idelta" | sed 's/^/         | delta: /'
+  fi
+  local inode_share
+  # posix-portability: deferred (exam.sh is Linux-only: it needs /proc and GNU timeout; GNU find -printf is the oracle)
+  inode_share="$(comm -12 <(find "$it" -type f -printf '%i\n' | sort) <(find "$ia/fx/code" -type f -printf '%i\n' | sort))"
+  local probe_mode=full; cp --reflink=always "$it/foundry.toml" "$ia/.probe-test" 2>/dev/null && probe_mode=reflink; rm -f "$ia/.probe-test"
+  if [ -d "$ia/fx/code" ] && [ ! -L "$ia/fx/code" ] && [ -z "$inode_share" ] \
+     && [ "$(meta_get "$ia/stage.meta" code_copy)" = "$probe_mode" ] && [ "$(meta_get "$ia/run.meta" code_copy)" = "$probe_mode" ] \
+     && [ "$(meta_get "$ia/stage.meta" code_manifest_sha256)" = "$(meta_get "$ic/code.seal" manifest_sha256)" ] \
+     && [ "$(meta_get "$ia/stage.meta" code_entries)" = "$(meta_get "$ic/code.seal" entries)" ]; then
+    ok "isolation: stage copies, never links (a real dir, no inode shared with the base; code_copy=$probe_mode = a direct cp --reflink=always probe here)"
+  else
+    bad "isolation: the stage copy is a link or shares inodes (code_copy=$(meta_get "$ia/stage.meta" code_copy), probe=$probe_mode)"
+  fi
+
+  # AC 2: stage refuses a drifted base and names every drifting path with its class; no arm dir is created.
+  echo 'contract Stray {}' > "$it/test/Stray.t.sol"; echo '// edit' >> "$it/src/pool/Pool.sol"; rm -f "$it/README.md"
+  chmod +x "$it/foundry.toml"; rm -f "$it/src/feed/Feed.sol"; ln -s ../pool/Pool.sol "$it/src/feed/Feed.sol"
+  mkdir -p "$it/out" && echo '{}' > "$it/out/x.json"; git -C "$it" rev-parse HEAD > "$it/.git/refs/stash"
+  bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm drift --repeat 1 --profile mock \
+    --checkout "$co" > "$work/idrift.out" 2>&1; rc=$?
+  local dmiss="" dl
+  for dl in 'added ./test/Stray.t.sol' 'modified(content) ./src/pool/Pool.sol' 'removed ./README.md' \
+            'modified(mode 644→755) ./foundry.toml' 'modified(type f→l) ./src/feed/Feed.sol' 'added dir ./out/ (1 entries)' \
+            'added ./.git/refs/stash'; do
+    grep -qxF -- "$dl" "$work/idrift.out" || dmiss="$dmiss [$dl]"
+  done
+  if [ "$rc" -eq 3 ] && [ -z "$dmiss" ] && [ ! -e "$iroot/arms/fx/src_feed/drift-r1" ] && grep -q "full list: $ic/code.drift.txt" "$work/idrift.out" \
+     && [ "$(grep -c . "$ic/code.drift.txt")" -eq 7 ]; then
+    ok "guard: stage refuses a drifted base and names all 7 drifts with their class (added, edited, deleted, chmod +x, file -> symlink, out/, .git/refs/stash); no arm dir; the refusal message carries the listing, code.drift.txt the full list"
+  else
+    bad "guard: drifted-base refusal (exit $rc) missing:$dmiss"; sed 's/^/         | /' "$work/idrift.out" | head -14
+  fi
+  rm -rf "$it" && cp -a "$iref" "$it" || die 3 "self-test: cannot restore the isolation tree"
+  bash "$SELF" guard --base "$ib" --contest fx > /dev/null 2>&1; expect_rc 0 $? "guard: the restored base matches its seal again (identity is content, mode and type, never inode or time)"
+
+  # AC 2: run refuses an arm whose copy drifted after stage; and an arm staged before #2372.
+  local ra2="$iroot/arms/fx/src_feed/late-r1"
+  bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm late --repeat 1 --profile mock --checkout "$co" > /dev/null 2>&1
+  echo 'contract Late {}' > "$ra2/fx/code/src/pool/Late.t.sol"
+  bash "$SELF" run --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm late --repeat 1 --profile mock \
+    --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 3 ] && grep -qxF 'added ./src/pool/Late.t.sol' "$ra2/guard-drift.txt" 2>/dev/null && ! grep -q 'breadth:' "$ra2/run.log" \
+     && [ ! -e "$ra2/run.meta" ]; then
+    ok "guard: run refuses an arm whose copy drifted after stage (exit 3, guard-drift.txt names the file, no breadth call, no run.meta)"
+  else
+    bad "guard: a drifted copy was hunted (exit $rc)"; tail -3 "$ra2/run.log" 2>/dev/null | sed 's/^/         | /'
+  fi
+  local ro2="$iroot/arms/fx/src_feed/old-r1" ro3="$iroot/arms/fx/src_feed/old-r2"
+  bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm old --repeat 1 --profile mock --checkout "$co" > /dev/null 2>&1
+  rm -rf "$ro2/fx/code" && ln -s "$ic/code" "$ro2/fx/code"
+  bash "$SELF" run --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm old --repeat 1 --profile mock \
+    --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
+  bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm old --repeat 2 --profile mock --checkout "$co" > /dev/null 2>&1
+  sed -i.bak '/^code_/d' "$ro3/stage.meta" && rm -f "$ro3/stage.meta.bak"
+  bash "$SELF" run --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm old --repeat 2 --profile mock \
+    --checkout "$co" --agentis "$stub" > /dev/null 2>&1; local rc2=$?
+  if [ "$rc" -eq 3 ] && [ "$rc2" -eq 3 ] && grep -q 'staged before #2372' "$ro2/run.log" && grep -q 'staged before #2372' "$ro3/run.log" \
+     && ! grep -q 'breadth:' "$ro2/run.log" "$ro3/run.log"; then
+    ok "guard: run refuses an arm staged before #2372 (code/ a symlink to the base, or stage.meta without code_copy): re-stage it"
+  else
+    bad "guard: a pre-#2372 arm was not refused (exit $rc / $rc2)"
+  fi
+
+  # seal / stage: an unsealed or tampered base is refused.
+  cp "$ic/code.seal" "$work/seal.bak" && cp "$ic/code.manifest" "$work/manifest.bak"
+  rm -f "$ic/code.seal"
+  bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm uns --repeat 1 --profile mock --checkout "$co" > "$work/iuns.out" 2>&1; rc=$?
+  cp "$work/seal.bak" "$ic/code.seal"; printf 'x' >> "$ic/code.manifest"
+  bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm uns --repeat 2 --profile mock --checkout "$co" > "$work/itam.out" 2>&1; rc2=$?
+  cp "$work/manifest.bak" "$ic/code.manifest"
+  if [ "$rc" -eq 3 ] && [ "$rc2" -eq 3 ] && grep -q 'is not sealed' "$work/iuns.out" && grep -q 'does not match the manifest_sha256' "$work/itam.out" \
+     && [ ! -e "$iroot/arms/fx/src_feed/uns-r1" ] && [ ! -e "$iroot/arms/fx/src_feed/uns-r2" ]; then
+    ok "seal: stage refuses an unsealed base and one whose code.manifest no longer matches code.seal (exit 3, nothing staged)"
+  else
+    bad "seal: an unsealed / tampered base was staged (exit $rc / $rc2)"
+  fi
+
+  # tmpfs: a live arm on a tmpfs exam root is refused before anything is staged; the mock backend stays allowed.
+  EXAM_TEST_FORCE_TMPFS=1 bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm live --repeat 1 \
+    --profile pointed --checkout "$co" > "$work/itmp.out" 2>&1; rc=$?
+  EXAM_TEST_FORCE_TMPFS=1 bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm mocktmp --repeat 1 \
+    --profile mock --checkout "$co" > /dev/null 2>&1; rc2=$?
+  if [ "$rc" -eq 3 ] && grep -q 'refusing a live arm on tmpfs' "$work/itmp.out" && [ ! -e "$iroot/arms/fx/src_feed/live-r1" ] && [ "$rc2" -eq 0 ]; then
+    ok "guard: stage refuses a live arm (pointed) on a tmpfs exam root, the mock backend is allowed (EXAM_TEST_FORCE_TMPFS seam)"
+  else
+    bad "guard: tmpfs refusal wrong (live exit $rc, mock exit $rc2)"
+  fi
+
+  # post-run: a base write during the hunt VOIDs the arm; the next row on that base is refused at stage; a row on
+  # another base still runs; after the file is gone --retry-void re-runs the row and keeps the VOID dir.
+  local proot="$work/postroot" pplan="$work/postplan.tsv" pv="$work/postroot/arms/fx/src_pool/bw-r1" pprog
+  printf 'fx\tsrc_pool\tbw\t1\tmock\t%s\t%s\nfx\tsrc_feed\tbw\t1\tmock\t%s\t%s\nfx\tsrc_feed\tbw2\t1\tmock\t%s\t%s\n' \
+    "$co" "$ib" "$co" "$ib" "$co" "$base" > "$pplan"
+  STUB_BASE_WRITE="$(cd "$it" && pwd -P)" bash "$SELF" drive --root "$proot" --plan "$pplan" --agentis "$stub" > "$work/pdrive1.out" 2>&1
+  pprog="$proot/logs/postplan.progress"
+  if [ "$(meta_get "$pv/run.meta" base_guard_after)" = drift:1 ] && grep -qxF 'added ./test/Leak.t.sol' "$pv/base-drift.txt" 2>/dev/null \
+     && [ "$(head -1 "$pv/void.txt" | cut -f1-2)" = "$(printf 'VOID\toperator')" ] && head -1 "$pv/void.txt" | grep -q 'exam-guard base-drift: 1 paths changed' \
+     && grep -q $'\tEND\tfx\tsrc_pool\tbw\tr1\trc=0\tdeep=0\tvoid=operator$' "$pprog" \
+     && grep -q $'\tEND\tfx\tsrc_feed\tbw\tr1\trc=stage-3\tdeep=skip$' "$pprog" && [ ! -e "$proot/arms/fx/src_feed/bw-r1" ] \
+     && grep -q $'\tEND\tfx\tsrc_feed\tbw2\tr1\trc=0\tdeep=0\tvoid=VALID$' "$pprog"; then
+    ok "post-run guard: a base write during the hunt -> base_guard_after=drift:1, base-drift.txt names test/Leak.t.sol, VOID operator (exam-guard base-drift); the next row on that base ends rc=stage-3, the row on the other base runs VALID"
+  else
+    bad "post-run guard: base write not caught: base_guard_after=$(meta_get "$pv/run.meta" base_guard_after) void=$(head -1 "$pv/void.txt" 2>/dev/null)"
+    sed 's/^/         | /' "$pprog" 2>/dev/null
+  fi
+  rm -f "$it/test/Leak.t.sol"
+  bash "$SELF" drive --root "$proot" --plan "$pplan" --retry-void --agentis "$stub" > /dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(head -1 "$pv/void.txt" 2>/dev/null)" = VALID ] && [ "$(meta_get "$pv/run.meta" base_guard_after)" = ok ] \
+     && [ "$(head -1 "$pv.void-1/void.txt" | cut -f1-2)" = "$(printf 'VOID\toperator')" ] && [ -f "$pv.void-1/base-drift.txt" ] \
+     && [ "$(head -1 "$proot/arms/fx/src_feed/bw-r1/void.txt" 2>/dev/null)" = VALID ]; then
+    ok "post-run guard: once the leaked file is removed, drive --retry-void re-runs the row (VALID) and keeps the VOID attempt as bw-r1.void-1; the refused row runs too"
+  else
+    bad "post-run guard: --retry-void after the base write (exit $rc)"; tail -4 "$pprog" | sed 's/^/         | /'
+  fi
+
+  # post-run: a guard that cannot run fails closed (the wrapper runs the real binary until the hunt starts).
+  if [ -n "$greal" ]; then
+    local wrap="$work/guard-wrap.sh" mark="$work/cannot-run.mark" ca="$iroot/arms/fx/src_pool/cr-r1"
+    printf '#!/bin/sh\n[ -e %s ] && exit 1\nexec %s "$@"\n' "$mark" "$greal" > "$wrap" && chmod +x "$wrap"
+    EXAM_GUARD_AGENTIS="$wrap" bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_pool --arm cr --repeat 1 \
+      --profile mock --checkout "$co" > /dev/null 2>&1
+    EXAM_GUARD_AGENTIS="$wrap" STUB_ENV_DUMP="$mark" bash "$SELF" run --root "$iroot" --base "$ib" --contest fx --zone src_pool --arm cr \
+      --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
+    if [ "$rc" -eq 0 ] && [ -s "$mark" ] && [ "$(meta_get "$ca/run.meta" base_guard_after)" = error ] \
+       && [ "$(meta_get "$ca/run.meta" repo_delta)" = error ] && grep -q 'exam-guard base-unverified' "$ca/void.operator" \
+       && [ "$(head -1 "$ca/void.txt" | cut -f1-2)" = "$(printf 'VOID\toperator')" ]; then
+      ok "post-run guard: a guard that cannot run after the hunt fails closed (run_finish fallback: void.operator base-unverified, base_guard_after=error -> VOID)"
+    else
+      bad "post-run guard: a guard that could not run did not VOID the arm (exit $rc, base_guard_after=$(meta_get "$ca/run.meta" base_guard_after))"
+    fi
+  else
+    bad "post-run guard: no agentis binary for the cannot-run case"
+  fi
+
+  # post-run: the guard also runs on the signal path (TERM to run -> run_on_signal -> run_finish).
+  local sa2="$iroot/arms/fx/src_pool/sig-r1" spid
+  bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_pool --arm sig --repeat 1 --profile mock --checkout "$co" > /dev/null 2>&1
+  STUB_SLEEP=40 STUB_BASE_WRITE="$(cd "$it" && pwd -P)" bash "$SELF" run --root "$iroot" --base "$ib" --contest fx --zone src_pool \
+    --arm sig --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1 &
+  spid=$!
+  local iw=0; while [ "$iw" -lt 150 ] && ! { [ -f "$it/test/Leak.t.sol" ] && [ -s "$sa2/run.pid" ]; }; do sleep 0.2; iw=$((iw + 1)); done; sleep 1
+  kill -TERM "$spid" 2>/dev/null; wait "$spid" 2>/dev/null; rc=$?
+  rm -f "$it/test/Leak.t.sol"
+  if [ "$rc" -eq 143 ] && [ "$(meta_get "$sa2/run.meta" rc)" = 143 ] && [ "$(meta_get "$sa2/run.meta" base_guard_after)" = drift:1 ] \
+     && [ "$(head -1 "$sa2/void.txt" | cut -f1-2)" = "$(printf 'VOID\tkilled')" ] \
+     && grep -q $'^ALSO\toperator\tvoid.operator:exam-guard base-drift: 1 paths changed' "$sa2/void.txt" \
+     && [ -z "$(bash "$SELF" kill --path "$sa2" --dry-run 2>/dev/null)" ]; then
+    ok "post-run guard runs on the signal path: a TERM to run still records base_guard_after=drift:1 (VOID killed, the base drift on record as ALSO operator); nothing is left under the arm"
+  else
+    bad "post-run guard on TERM: exit $rc rc=$(meta_get "$sa2/run.meta" rc) base_guard_after=$(meta_get "$sa2/run.meta" base_guard_after) void=$(head -1 "$sa2/void.txt" 2>/dev/null)"
+    bash "$SELF" kill --path "$sa2" --dry-run 2>/dev/null | sed 's/^/         | left: /'
+    bash "$SELF" kill --path "$sa2" --grace 1 > /dev/null 2>&1
+  fi
+  bash "$SELF" guard --base "$ib" --contest fx > /dev/null 2>&1; expect_rc 0 $? "guard: the isolation base is clean again after the leak cases"
+
+  # isolation: two base dirs on one tree with different code_dir_rel (relative --base, a relative code link, a
+  # tree reached through a symlink): both seal, stage and pass the isolation oracle.
+  local t2="$work/t2tree" t2ref="$work/t2tree.ref" tba="$work/tb-a" tbb="$work/tb-b"
+  mkdir -p "$t2" "$tba/fx" "$tbb/fx" && cp -R "$fix/project/." "$t2/" && mkdir -p "$t2/sub" && cp -R "$fix/project/." "$t2/sub/" \
+    && git -C "$t2" init -q && git -C "$t2" config user.email t@example.invalid && git -C "$t2" config user.name t \
+    && git -C "$t2" add -A && git -C "$t2" commit -qm two && ln -s t2tree "$work/t2-link" && ln -s ../../t2-link "$tba/fx/code" \
+    && ln -s "$t2" "$tbb/fx/code" && cp "$fix/truth.tsv" "$tba/fx/" && cp "$fix/truth.tsv" "$tbb/fx/" \
+    || die 3 "self-test: cannot build the shared tree"
+  (cd "$work" && bash "$SELF" freeze --base tb-a --contest fx --checkout "$co" --profile mock --code-subdir . \
+     --map-fixture "$fix/zones.fixture.txt" --brief-fixture "$fix/briefs.fixture.txt" --agentis "$stub") > /dev/null 2>&1; rc=$?
+  bash "$SELF" freeze --base "$tbb" --contest fx --checkout "$co" --profile mock --code-subdir sub \
+    --map-fixture "$fix/zones.fixture.txt" --brief-fixture "$fix/briefs.fixture.txt" --agentis "$stub" > /dev/null 2>&1; rc2=$?
+  cp -a "$t2" "$t2ref"
+  local troot2="$work/t2root" aa2 ab2
+  aa2="$troot2/arms/fx/src_pool/a-r1"; ab2="$troot2/arms/fx/src_pool/b-r1"
+  bash "$SELF" stage --root "$troot2" --base "$tba" --contest fx --zone src_pool --arm a --repeat 1 --profile mock --checkout "$co" > /dev/null 2>&1 \
+    && STUB_REPO_MUTATE=1 bash "$SELF" run --root "$troot2" --base "$tba" --contest fx --zone src_pool --arm a --repeat 1 --profile mock \
+         --checkout "$co" --agentis "$stub" > /dev/null 2>&1 \
+    && bash "$SELF" stage --root "$troot2" --base "$tbb" --contest fx --zone src_pool --arm b --repeat 1 --profile mock --checkout "$co" > /dev/null 2>&1 \
+    && STUB_REPO_MUTATE=1 bash "$SELF" run --root "$troot2" --base "$tbb" --contest fx --zone src_pool --arm b --repeat 1 --profile mock \
+         --checkout "$co" --agentis "$stub" > /dev/null 2>&1; local rc3=$?
+  if [ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] && [ "$rc3" -eq 0 ] && diff -r --no-dereference "$t2ref" "$t2" > /dev/null 2>&1 \
+     && [ "$(meta_get "$tba/fx/code.seal" code_phys)" = "$(cd "$t2" && pwd -P)" ] \
+     && [ "$(meta_get "$tba/fx/code.seal" manifest_sha256)" = "$(meta_get "$tbb/fx/code.seal" manifest_sha256)" ] \
+     && [ "$(meta_get "$aa2/run.meta" code)" = "$aa2/fx/code" ] && [ "$(meta_get "$ab2/run.meta" code)" = "$ab2/fx/code/sub" ] \
+     && [ -f "$aa2/fx/code/test/Leftover.t.sol" ] && [ -f "$ab2/fx/code/sub/test/Leftover.t.sol" ] \
+     && grep -qxF $'added dir (1 entries)\t./sub/test/' "$ab2/repo-delta.tsv" \
+     && [ "$(meta_get "$aa2/run.meta" base_guard_after)" = ok ] && [ "$(meta_get "$ab2/run.meta" base_guard_after)" = ok ]; then
+    ok "isolation: two bases on one tree (code_dir_rel . and sub; relative --base, a relative code link through a symlinked tree): both seal (code_phys = the physical tree), stage, run and leave the tree byte-identical"
+  else
+    bad "isolation: two bases on one tree (freeze $rc/$rc2, stage+run $rc3)"; diff -r --no-dereference "$t2ref" "$t2" 2>&1 | head -3 | sed 's/^/         | /'
+    echo "         | phys=$(meta_get "$tba/fx/code.seal" code_phys) shaA=$(meta_get "$tba/fx/code.seal" manifest_sha256) shaB=$(meta_get "$tbb/fx/code.seal" manifest_sha256) codeA=$(meta_get "$aa2/run.meta" code) codeB=$(meta_get "$ab2/run.meta" code) bgA=$(meta_get "$aa2/run.meta" base_guard_after) bgB=$(meta_get "$ab2/run.meta" base_guard_after)"
+    ls "$aa2/fx/code/test" "$ab2/fx/code/sub/test" 2>&1 | sed 's/^/         | /'; sed 's/^/         | delta: /' "$ab2/repo-delta.tsv" 2>/dev/null | head -12
+  fi
+
+  # seal: fail-closed setup acceptance. Every case starts unsealed and must leave no code.seal behind.
+  local sb="$work/sbase" st="$work/sbase/st/code" dep="$work/deprepo"
+  mkdir -p "$st/src" "$dep" && echo 'contract A {}' > "$st/src/A.sol" && echo '[profile.default]' > "$st/foundry.toml" \
+    && git -C "$st" init -q && git -C "$st" config user.email t@example.invalid && git -C "$st" config user.name t \
+    && git -C "$st" add -A && git -C "$st" commit -qm st \
+    && echo dep > "$dep/Dep.sol" && git -C "$dep" init -q && git -C "$dep" config user.email t@example.invalid \
+    && git -C "$dep" config user.name t && git -C "$dep" add -A && git -C "$dep" commit -qm dep \
+    && git -C "$st" -c protocol.file.allow=always submodule add -q "$dep" lib/dep > /dev/null 2>&1 \
+    && git -C "$st" commit -qm sub || die 3 "self-test: cannot build the seal tree"
+  sealrc() { bash "$SELF" seal --base "$sb" --contest st "$@" > "$work/seal.out" 2>&1; local r=$?; [ ! -e "$sb/st/code.seal" ] || r="$r+sealed"; echo "$r"; }
+  local smiss="" got
+  echo '[profile.ci]' >> "$st/foundry.toml"; mkdir -p "$st/cache" && echo x > "$st/cache/a.json"
+  got="$(sealrc)"; [ "$got" = 3 ] && grep -q 'changed(.M) foundry.toml' "$work/seal.out" && grep -q 'untracked cache/a.json' "$work/seal.out" || smiss="$smiss no-accept=$got"
+  got="$(sealrc --accept 'foundry.toml ' --accept cache/)"; [ "$got" = 3 ] || smiss="$smiss trailing-space=$got"
+  got="$(sealrc --accept 'foundrу.toml' --accept cache/)"; [ "$got" = 3 ] || smiss="$smiss look-alike=$got"
+  got="$(sealrc --accept foundry.toml --accept cache)"; [ "$got" = 3 ] && grep -q 'untracked cache/a.json' "$work/seal.out" || smiss="$smiss dir-no-slash=$got"
+  (cd "$st/lib/dep" && echo more >> Dep.sol && git -c user.email=t@example.invalid -c user.name=t commit -qam bump)
+  echo 'contract P {}' > "$st/lib/dep/Untracked.t.sol"
+  got="$(sealrc --accept foundry.toml --accept cache/ --accept lib/dep)"
+  [ "$got" = 3 ] && grep -q 'untracked lib/dep/Untracked.t.sol' "$work/seal.out" || smiss="$smiss untracked-in-submodule=$got"
+  rm -f "$st/lib/dep/Untracked.t.sol"
+  ln -s /etc/hostname "$st/abs-link"; ln -s ../../outside "$st/src/esc-link"
+  git -C "$st" add abs-link src/esc-link && git -C "$st" commit -qm links
+  got="$(sealrc --accept foundry.toml --accept cache/ --accept lib/dep)"
+  [ "$got" = 3 ] && grep -q 'absolute symlink abs-link -> /etc/hostname' "$work/seal.out" && grep -q 'escaping symlink src/esc-link' "$work/seal.out" \
+    || smiss="$smiss symlinks=$got"
+  git -C "$st" mv src/A.sol src/B.sol
+  got="$(sealrc --accept foundry.toml --accept cache/ --accept lib/dep --accept abs-link --accept src/esc-link --accept src/)"
+  [ "$got" = 3 ] && grep -q '^  unsupported ' "$work/seal.out" || smiss="$smiss rename=$got"
+  git -C "$st" mv src/B.sol src/A.sol
+  got="$(sealrc --accept foundry.toml --accept cache/ --accept lib/dep --accept abs-link --accept src/esc-link)"
+  local sok=0; [ "$got" = "0+sealed" ] && sok=1
+  got="$(sealrc --accept foundry.toml --accept cache/ --accept lib/dep --accept abs-link --accept src/esc-link)"; [ "$got" = "3+sealed" ] || smiss="$smiss second-seal=$got"
+  got="$(sealrc --force --accept foundry.toml --accept cache/ --accept lib/dep --accept abs-link --accept src/esc-link)"; [ "$got" = "0+sealed" ] || smiss="$smiss force=$got"
+  mkdir -p "$work/sbase/ng/code/d" && echo x > "$work/sbase/ng/code/d/x.sol" && mkdir -p "$work/sbase/empty/code/d/e"
+  bash "$SELF" seal --base "$sb" --contest ng > /dev/null 2>&1; [ "$?" -eq 3 ] && [ ! -e "$sb/ng/code.seal" ] || smiss="$smiss non-git"
+  bash "$SELF" seal --base "$sb" --contest empty --no-git > /dev/null 2>&1; [ "$?" -eq 3 ] && [ ! -e "$sb/empty/code.seal" ] || smiss="$smiss empty"
+  # an unmerged path is refused whatever is accepted
+  local um="$work/sbase/um/code"
+  mkdir -p "$um" && echo a > "$um/f.sol" && git -C "$um" init -q && git -C "$um" config user.email t@example.invalid \
+    && git -C "$um" config user.name t && git -C "$um" add -A && git -C "$um" commit -qm a && git -C "$um" checkout -qb other \
+    && echo b > "$um/f.sol" && git -C "$um" commit -qam b && git -C "$um" checkout -q - && echo c > "$um/f.sol" \
+    && git -C "$um" commit -qam c && { git -C "$um" merge -q other > /dev/null 2>&1; true; }
+  bash "$SELF" seal --base "$sb" --contest um --accept f.sol > "$work/seal-um.out" 2>&1; [ "$?" -eq 3 ] && grep -q '^  unsupported u' "$work/seal-um.out" || smiss="$smiss unmerged"
+  if [ "$sok" -eq 1 ] && [ -z "$smiss" ] && grep -q '^accepted git difference: changed(.M) foundry.toml$' "$sb/st/code.setup.txt" \
+     && grep -q '^accepted git difference: submodule-commit lib/dep$' "$sb/st/code.setup.txt" \
+     && grep -q '^accepted absolute symlink: abs-link -> /etc/hostname$' "$sb/st/code.setup.txt" \
+     && [ "$(meta_get "$sb/st/code.seal" accepted)" != - ] && bash "$SELF" guard --base "$sb" --contest st > /dev/null 2>&1; then
+    ok "seal: fail-closed setup acceptance (unaccepted edit/untracked, trailing-space and look-alike accepts, a dir accept without /, an untracked file in an accepted submodule, absolute + escaping symlinks, a rename, an unmerged path, a second seal without --force, a non-git tree without --no-git, an empty tree: all exit 3 with no seal); the accepted setup is on record in code.setup.txt"
+  else
+    bad "seal: setup acceptance:$smiss (sealed ok=$sok)"; sed 's/^/         | /' "$work/seal.out" | head -8
+  fi
+
+  # guard units: trees the test builds, sealed with --no-git, compared through `exam.sh guard`.
+  gtree() { rm -rf "$work/gb/$1"; mkdir -p "$work/gb/$1/code"; }
+  gseal() { bash "$SELF" seal --base "$work/gb" --contest "$1" --no-git --force > "$work/gseal.out" 2>&1; }
+  gcheck() { bash "$SELF" guard --base "$work/gb" --contest "$1" "${@:2}" > "$work/gcheck.out" 2>&1; }
+  glisted() { grep -E '^(added|removed|modified)' "$work/gcheck.out"; }
+  local hx="$work/gb/hx/code" hn
+  gtree hx; mkdir -p "$hx/src" && echo base > "$hx/src/Pool.sol"
+  for hn in "Poоl.sol" "a​b.t.sol" "trail " "$(printf 'tab\tx')" "$(printf 'nl\nx')" 'back\slash' 'x:1, y' 'é' 'é'; do
+    printf '%s' "$hn" > "$hx/src/$hn"
+  done
+  gseal hx; cp "$work/gb/hx/code.manifest" "$work/hx.m1"; gseal hx
+  gcheck hx; rc=$?
+  echo add > "$hx/src/Zz.sol"; gcheck hx; rc2=$?
+  if [ "$rc" -eq 0 ] && cmp -s "$work/hx.m1" "$work/gb/hx/code.manifest" && [ "$rc2" -eq 3 ] && [ "$(glisted)" = 'added ./src/Zz.sol' ]; then
+    ok "guard: manifest round-trip over the hostile names (a re-seal renders byte-identical; the unchanged tree is clean; one added file is the ONLY drift, so every hostile record parsed back exactly)"
+  else
+    bad "guard: manifest round-trip (clean exit $rc, drift exit $rc2): $(glisted | paste -sd'|' -)"
+  fi
+  rm -f "$hx/src/Zz.sol"; gtree hy; mkdir -p "$work/gb/hy/code/src" && echo base > "$work/gb/hy/code/src/Pool.sol"; gseal hy
+  cp -a "$hx/src/." "$work/gb/hy/code/src/"; gcheck hy
+  local hwant
+  hwant="$(printf '%s\n' 'added ./src/%C3%A9' 'added ./src/Po%D0%BEl.sol' 'added ./src/a%E2%80%8Bb.t.sol' 'added ./src/back%5Cslash' \
+    'added ./src/e%CC%81' 'added ./src/nl%0Ax' 'added ./src/tab%09x' 'added ./src/trail+' 'added ./src/x%3A1%2C+y')"
+  if [ "$(glisted)" = "$hwant" ]; then
+    ok "guard: hostile names are distinct and visibly encoded (Cyrillic look-alike, zero-width, trailing space, tab, newline, backslash, ':1, ', NFC vs NFD)"
+  else
+    bad "guard: hostile names: $(glisted | paste -sd'|' -)"
+  fi
+  printf 'x' > "$work/gb/hy/code/src/$(printf 'bad\377')"; gcheck hy; rc=$?
+  if [ "$rc" -eq 3 ] && grep -q 'not valid UTF-8' "$work/gcheck.out" && grep -qF './src/bad\377' "$work/gcheck.out"; then
+    ok "guard: an undecodable name (byte 0xff) fails closed (exit 3) and is named (./src/bad\\377)"
+  else
+    bad "guard: an undecodable name was not refused (exit $rc)"
+  fi
+  local so="$work/gb/so/code" i
+  gtree so; mkdir -p "$so/t" && for i in $(seq 1 10); do echo "$i" > "$so/t/S$i.sol"; done; gseal so
+  for i in $(seq 1 38); do echo "p$i" > "$so/t/Poc$i.t.sol"; done; mkdir -p "$so/cache" && echo c > "$so/cache/x.json"
+  gcheck so; rc=$?
+  if [ "$rc" -eq 3 ] && grep -q 'drift_records=walk:+40/-0,content:+39/-0' "$work/gcheck.out" && [ "$(glisted | grep -c .)" -eq 39 ] \
+     && glisted | grep -qx 'added dir ./cache/ (1 entries)' && ! glisted | grep -q 'cache/x.json'; then
+    ok "guard: set-op arithmetic (38 PoC files + 1 new dir with 1 file: walk +40, content +39, removed 0; 39 listed lines, the dir's file only inside its dir line; the size cross-check holds)"
+  else
+    bad "guard: set-op arithmetic (exit $rc): $(grep -o 'drift_records=[^ )]*' "$work/gcheck.out") lines=$(glisted | grep -c .)"
+  fi
+  local ht="$work/gb/ht/code"
+  gtree ht; for i in a0 b1 c2 zz; do echo "$i" > "$ht/$i.sol"; done; gseal ht
+  rm -f "$ht/a0.sol" "$ht/zz.sol"; echo f > "$ht/!first.sol"; echo l > "$ht/~~last.sol"; gcheck ht
+  if [ "$(glisted | paste -sd'|' -)" = "added ./%21first.sol|added ./~~last.sol|removed ./a0.sol|removed ./zz.sol" ]; then
+    ok "guard: drift at the first and last manifest entries (added first/last by bytes, the first + last sealed files deleted): all four named"
+  else
+    bad "guard: head/tail drift: $(glisted | paste -sd'|' -)"
+  fi
+  local tl
+  for tl in "trail " $'nl\n'; do
+    gtree tl; printf 'x' > "$work/gb/tl/code/$tl"; gseal tl; gcheck tl; rc=$?
+    echo y > "$work/gb/tl/code/zz.sol"; gcheck tl; rc2=$?
+    if [ "$rc" -eq 0 ] && [ "$rc2" -eq 3 ] && [ "$(glisted)" = 'added ./zz.sol' ]; then
+      ok "guard: a last walk entry named '$(printf '%s' "$tl" | od -An -c | tr -s ' ' | sed 's/^ //')' round-trips (records end in NUL; exec trims only trailing whitespace)"
+    else
+      bad "guard: last entry '$tl' did not round-trip (clean $rc, drift $rc2): $(glisted | paste -sd'|' -)"
+    fi
+  done
+  local cm="$work/gb/cm/code"
+  gtree cm; mkdir -p "$cm/s" && echo one > "$cm/s/Edit.sol" && echo two > "$cm/s/Same.sol" && echo three > "$cm/s/Mode.sol" \
+    && echo four > "$cm/s/Type.sol" && ln -s Same.sol "$cm/s/link"; gseal cm
+  cp -p "$cm/s/Edit.sol" "$work/edit.keep"; echo ONE > "$cm/s/Edit.sol"; touch -r "$work/edit.keep" "$cm/s/Edit.sol"
+  cat "$cm/s/Same.sol" > "$work/same.tmp" && cat "$work/same.tmp" > "$cm/s/Same.sol"
+  chmod +x "$cm/s/Mode.sol"; rm -f "$cm/s/Type.sol" && ln -s Same.sol "$cm/s/Type.sol"; ln -sfn Edit.sol "$cm/s/link"
+  gcheck cm
+  if [ "$(glisted | paste -sd'|' -)" = "modified(content) ./s/Edit.sol|modified(mode 644→755) ./s/Mode.sol|modified(target) ./s/link|modified(type f→l) ./s/Type.sol" ]; then
+    ok "guard: identity is content, not time (an edit with the mtime restored is modified(content), an identical rewrite is clean); chmod +x -> modified(mode), file -> symlink -> modified(type), a retarget -> modified(target)"
+  else
+    bad "guard: content/mode/type/target: $(glisted | paste -sd'|' -)"
+  fi
+  local ix="$work/gb/ix/code"
+  gtree ix; mkdir -p "$ix/docs" "$ix/test/.git" "$ix/.GIT" "$ix/.gіt" && echo d > "$ix/docs/index" && echo n > "$ix/test/.git/index" \
+    && echo u > "$ix/.GIT/index" && echo l > "$ix/.gіt/index" && echo r > "$ix/README.md" && git -C "$ix" init -q \
+    && git -C "$ix" config user.email t@example.invalid && git -C "$ix" config user.name t && git -C "$ix" add README.md docs \
+    && git -C "$ix" commit -qm ix; gseal ix
+  local ix0; ix0="$(file_sha "$ix/.git/index")"
+  # read-tree drops the cached stat data, so the next status deterministically rewrites the index (same tree)
+  touch "$ix/README.md" "$ix/docs/index"; git -C "$ix" read-tree HEAD && git -C "$ix" status > /dev/null 2>&1
+  gcheck ix; rc=$?
+  local ix1; ix1="$(file_sha "$ix/.git/index")"
+  echo D > "$ix/docs/index"; echo N > "$ix/test/.git/index"; echo U > "$ix/.GIT/index"; echo L > "$ix/.gіt/index"; echo x > "$ix/index"
+  gcheck ix
+  if [ "$rc" -eq 0 ] && [ "$ix0" != "$ix1" ] \
+     && [ "$(glisted | paste -sd'|' -)" = "added ./index|modified(content) ./.GIT/index|modified(content) ./.g%D1%96t/index|modified(content) ./docs/index|modified(content) ./test/.git/index" ]; then
+    ok "guard: a rewritten sealed .git/index is not drift (a git status rewrote it); any other index change is (docs/index, test/.git/index, .GIT/index, the look-alike .gіt/index, a new ./index)"
+  else
+    bad "guard: index exemption (clean exit $rc, index rewritten: $([ "$ix0" != "$ix1" ] && echo yes || echo no)): $(glisted | paste -sd'|' -)"
+  fi
+  local lc2="$work/gb/cap/code"
+  gtree cap; mkdir -p "$lc2/t" && echo s > "$lc2/t/Seed.sol"; gseal cap
+  for i in $(seq -w 1 100); do echo "$i" > "$lc2/t/P$i.t.sol"; done
+  gcheck cap; local c100; c100="$(glisted | grep -c .)|$(grep -c '^\.\.\. ' "$work/gcheck.out")|$(grep -c . "$work/gb/cap/code.drift.txt")"
+  echo 101 > "$lc2/t/P101.t.sol"; gcheck cap
+  local c101; c101="$(glisted | grep -c .)|$(grep '^\.\.\. ' "$work/gcheck.out")|$(grep -c . "$work/gb/cap/code.drift.txt")"
+  mkdir -p "$lc2/cache" && echo c > "$lc2/cache/c.json"; gcheck cap
+  local c102; c102="$(glisted | grep -c .)|$(grep '^\.\.\. ' "$work/gcheck.out")"
+  gcheck cap --list; local cfull; cfull="$(glisted | grep -c .)"
+  rm -rf "$lc2/t/P"* "$lc2/cache"; mkdir -p "$lc2/big/n"; for i in $(seq 1 249); do echo "$i" > "$lc2/big/B$i.sol"; done
+  gcheck cap; local cbig; cbig="$(glisted | paste -sd'|' -)"
+  echo n > "$lc2/big/n/N.sol"; gcheck cap; local cbig2; cbig2="$(glisted | paste -sd'|' -)"
+  if [ "$c100" = "100|0|100" ] && [ "$c101" = "100|... 1 more|101" ] && [ "$c102" = "100|... 2 more" ] && [ "$cfull" = 102 ] \
+     && [ "$cbig" = "added dir ./big/ (250 entries)" ] && [ "$cbig2" = "added dir ./big/ (251 entries)" ]; then
+    ok "guard: listing cap (100 lines: all, no 'more'; 101: 100 + '... 1 more', the file holds 101; 101 + 1 dir: '... 2 more'; --list: all 102; one added dir with 249 files + 1 subdir = one line '(250 entries)', nested entries count)"
+  else
+    bad "guard: listing cap: 100=[$c100] 101=[$c101] 102=[$c102] full=$cfull big=[$cbig] big2=[$cbig2]"
+  fi
+
+  # errors fail closed: exit 3 at stage and guard, never "clean".
+  local emiss="" ee="$work/gb/err/code"
+  gtree err; mkdir -p "$ee/s" && echo a > "$ee/s/A.sol" && echo b > "$ee/s/B.sol"; gseal err
+  chmod 000 "$ee/s/B.sol"
+  if [ -r "$ee/s/B.sol" ]; then
+    ok "guard errors: unreadable-file case skipped (this user reads mode-000 files, e.g. root)"
+  else
+    gcheck err; [ "$?" -eq 3 ] && grep -q 'cannot hash' "$work/gcheck.out" || emiss="$emiss unreadable"
+  fi
+  chmod 644 "$ee/s/B.sol"; gcheck err || emiss="$emiss restored-not-clean"
+  cp "$work/gb/err/code.manifest" "$work/err.m"; cp "$work/gb/err/code.seal" "$work/err.s"
+  printf 'x' >> "$work/gb/err/code.manifest"; gcheck err; [ "$?" -eq 3 ] && grep -q 'does not match the manifest_sha256' "$work/gcheck.out" || emiss="$emiss sha"
+  sed '1s/v2/v9/' "$work/err.m" > "$work/gb/err/code.manifest"
+  sed "s/^manifest_sha256=.*/manifest_sha256=$(file_sha "$work/gb/err/code.manifest")/" "$work/err.s" > "$work/gb/err/code.seal"
+  gcheck err; [ "$?" -eq 3 ] && grep -q 'no v2 header' "$work/gcheck.out" || emiss="$emiss header"
+  head -n 2 "$work/err.m" > "$work/gb/err/code.manifest"
+  sed "s/^manifest_sha256=.*/manifest_sha256=$(file_sha "$work/gb/err/code.manifest")/" "$work/err.s" > "$work/gb/err/code.seal"
+  gcheck err; [ "$?" -eq 3 ] && grep -q 'malformed' "$work/gcheck.out" || emiss="$emiss lines"
+  cp "$work/err.m" "$work/gb/err/code.manifest"; cp "$work/err.s" "$work/gb/err/code.seal"
+  EXAM_TEST_GUARD_STDOUT_MAX=64 gcheck err; [ "$?" -eq 3 ] && grep -q 'truncated' "$work/gcheck.out" || emiss="$emiss truncation"
+  sed 's/^cb 5000000;$/cb 300;/' "$GUARD_AG" > "$work/exam-guard-lowcb.ag"
+  EXAM_TEST_GUARD_AG="$work/exam-guard-lowcb.ag" gcheck err; [ "$?" -eq 3 ] && grep -q 'CognitiveOverload' "$work/gcheck.out" || emiss="$emiss cb"
+  rm -rf "$ee" && ln -s "$work/gb/err/nowhere" "$ee"; gcheck err; [ "$?" -eq 3 ] && grep -q 'cannot walk' "$work/gcheck.out" || emiss="$emiss dangling"
+  if [ -z "$emiss" ]; then
+    ok "guard: errors fail closed (exit 3): an unreadable file, a manifest whose sha256 differs from code.seal, a bad header, a missing line, truncated shim output, CB exhaustion, a dangling code link"
+  else
+    bad "guard: error paths did not fail closed:$emiss"; sed 's/^/         | /' "$work/gcheck.out" | head -5
+  fi
+
   echo "exam.sh self-test: stage"
   local root="$work/root" a1
   bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_pool --arm mock --repeat 1 --profile mock \
@@ -1565,10 +2128,10 @@ cmd_self_test() {
   else
     bad "stage: scope.tsv changed without INJECT_CLASSES"
   fi
-  if [ -L "$a1/fx/code" ] && [ ! -L "$a1/fx/zone-hunt-out/map" ] && grep -q 'SELF-CHECK PASS' "$a1/stage.log" \
+  if [ -d "$a1/fx/code" ] && [ ! -L "$a1/fx/code" ] && [ ! -L "$a1/fx/zone-hunt-out/map" ] && grep -q 'SELF-CHECK PASS' "$a1/stage.log" \
      && [ -f "$a1/_gt/fx/truth.tsv" ] && [ -L "$a1/_gt/fx/judging" ] && [ -d "$a1/_gt/fx/zone-hunt-out/map" ] \
      && [ ! -e "$a1/fx/truth.tsv" ] && [ ! -e "$a1/fx/judging" ]; then
-    ok "stage: code/ symlinked, map/ copied, truth.tsv + judging/ only in the sibling _gt/ view, self-check passed"
+    ok "stage: code/ a private copy (#2372), map/ copied, truth.tsv + judging/ only in the sibling _gt/ view, self-check passed"
   else
     bad "stage: copy/symlink discipline or the coverage self-check is wrong"
   fi
@@ -1722,11 +2285,16 @@ cmd_self_test() {
   else
     bad "run did not refuse DF_NO_SANDBOX (exit $rc)"
   fi
-  touch "$cdir/code/truth.tsv"
+  # #2372: the hunt's repo root is the arm's private copy, so that is where a leaked truth.tsv would sit.
+  touch "$root/arms/fx/src_feed/nosb-r1/fx/code/truth.tsv"
   bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_feed --arm nosb --repeat 1 \
-    --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
-  rm -f "$cdir/code/truth.tsv"
-  expect_rc 3 "$rc" "run refuses a repo root that holds a truth.tsv (ground truth visible to the hunt)"
+    --profile mock --checkout "$co" --agentis "$stub" > "$work/gtleak.out" 2>&1; rc=$?
+  rm -f "$root/arms/fx/src_feed/nosb-r1/fx/code/truth.tsv"
+  if [ "$rc" -eq 3 ] && grep -q 'ground truth is visible to the hunt' "$work/gtleak.out"; then
+    ok "run refuses a repo root (the arm's copy) that holds a truth.tsv (ground truth visible to the hunt; exit 3)"
+  else
+    bad "run did not refuse a truth.tsv in its repo root (exit $rc)"
+  fi
   printf 'BACKEND=mock\nenv.SEVERITY_RUBRIC=1\nDEEP_PASS=1\ndeep.DEEP_HUNT_PROMISES=1\n' > "$work/p-rubric.env"
   bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_feed --arm rubric --repeat 1 \
     --profile "$work/p-rubric.env" --checkout "$co" > /dev/null 2>&1
@@ -2005,7 +2573,7 @@ cmd_self_test() {
   echo "exam.sh self-test: multi-root freeze + stage + run (#2255)"
   local mbase="$work/mbase"
   mkdir -p "$mbase/mr" && cp -R "$df_real/fixtures/multi-root" "$mbase/mr/code" && cp "$fix/truth.tsv" "$mbase/mr/truth.tsv"
-  bash "$SELF" freeze --base "$mbase" --contest mr --checkout "$co" --profile mock --project-roots core,market \
+  bash "$SELF" freeze --base "$mbase" --contest mr --checkout "$co" --profile mock --project-roots core,market --no-git \
     --map-fixture "$df_real/fixtures/multi-root/zones.fixture.txt" --brief-fixture "$df_real/fixtures/multi-root/briefs.fixture.txt" \
     --agentis "$stub" > "$work/mfreeze.out" 2>&1
   rc=$?; expect_rc 0 "$rc" "freeze a multi-project clone from its root (--project-roots core,market)"
@@ -2023,8 +2591,8 @@ cmd_self_test() {
     --profile "$work/p-plain.env" --checkout "$co" --agentis "$stub" > /dev/null 2>&1
   rc=$?
   local ma="$root/arms/mr/market_src/plain-r1"
-  if [ "$rc" -eq 0 ] && [ "$(meta_get "$ma/run.meta" code)" = "$mbase/mr/code" ] && grep -q -- '--project-roots core,market' "$ma/run.log"; then
-    ok "run: a multi-root arm hunts from the clone root with the frozen roots (the rehunt root assertion holds)"
+  if [ "$rc" -eq 0 ] && [ "$(meta_get "$ma/run.meta" code)" = "$ma/mr/code" ] && grep -q -- '--project-roots core,market' "$ma/run.log"; then
+    ok "run: a multi-root arm hunts from the root of its private clone copy with the frozen roots (the rehunt root assertion holds)"
   else
     bad "run: the multi-root arm failed (exit $rc)"; tail -5 "$ma/run.log" 2>/dev/null | sed 's/^/         | /'
   fi
@@ -2034,7 +2602,7 @@ cmd_self_test() {
   mkdir -p "$lc" && cp -R "$fix/project" "$lc/code" && cp "$lfx/FeeMath.sol" "$lc/code/src/pool/" \
     && cp "$lfx/truth.tsv" "$lc/truth.tsv" && cp -R "$lfx/fx/map" "$lfx/fx/briefs" "$lc/" \
     || die 3 "self-test: cannot build the legacy base"
-  local -a adopt_args=(--base "$lbase" --contest fx --checkout-commit 0123abc --model claude-opus-4-8 --code-subdir .)
+  local -a adopt_args=(--base "$lbase" --contest fx --checkout-commit 0123abc --model claude-opus-4-8 --code-subdir . --no-git)
   local flip=0; [ "$(head -c1 "$lfx/legacy.sha256")" != 0 ] || flip=1
   sed "1s/^./$flip/" "$lfx/legacy.sha256" > "$work/legacy-bad.sha256"
   bash "$SELF" adopt "${adopt_args[@]}" --legacy-sha "$work/legacy-bad.sha256" > "$work/adopt-bad.out" 2>&1; rc=$?
@@ -2051,6 +2619,11 @@ cmd_self_test() {
     ok "adopt: verified against the legacy list -> freeze.sha256 + freeze.meta (adopted=1, recorded commit + model); map/ + briefs/ untouched"
   else
     bad "adopt of the legacy fixture: exit $rc"; sed 's/^/         | /' "$work/adopt.out" | head -5
+  fi
+  if [ -f "$lc/code.seal" ] && [ "$(meta_get "$lc/code.seal" git_head)" = - ] && [ "$(meta_get "$lc/code.seal" accepted)" = - ]; then
+    ok "seal: adopt seals the adopted base too (#2372; --no-git: no diff against HEAD, git_head=-)"
+  else
+    bad "seal: adopt left the legacy base unsealed"
   fi
   bash "$SELF" adopt "${adopt_args[@]}" --legacy-sha "$lfx/legacy.sha256" > /dev/null 2>&1
   expect_rc 3 $? "a second adopt without --force is refused"
@@ -2184,7 +2757,7 @@ cmd_self_test() {
     && rm -f "$ub/fx/map/scope.tsv.bak" || die 3 "self-test: cannot build the sliced-scope base"
   # shellcheck disable=SC2086  # SHA256_CMD is a command + its flags, split on purpose
   (cd "$ub" && find fx/map fx/briefs -type f -print0 | LC_ALL=C sort -z | xargs -0 $SHA256_CMD) > "$work/legacy-sliced.sha256"
-  bash "$SELF" adopt --base "$ub" --contest fx --checkout-commit 0123abc --model claude-opus-4-8 --code-subdir . \
+  bash "$SELF" adopt --base "$ub" --contest fx --checkout-commit 0123abc --model claude-opus-4-8 --code-subdir . --no-git \
     --legacy-sha "$work/legacy-sliced.sha256" > /dev/null 2>&1 \
     && bash "$SELF" stage --root "$proot" --base "$ub" --contest fx --zone src_pool --arm ptr-k7q-L0 --repeat 2 \
          --profile mock --checkout "$co" --pointer "L0:k7q:$ladder" > /dev/null 2>&1; rc=$?
@@ -2303,8 +2876,10 @@ cmd_self_test() {
   else
     bad "drive: progress/markers wrong"; sed 's/^/         | /' "$prog" 2>/dev/null; tail -5 "$work/drive.out" | sed 's/^/         | /'
   fi
-  if grep -q 're-exec from the snapshot' "$work/drive.out" && [ -n "$(find "$droot/logs" -path '*snapshot*/exam/exam.sh')" ]; then
-    ok "drive: re-executed from a snapshot copy of exam/ under logs/"
+  if grep -q 're-exec from the snapshot' "$work/drive.out" && [ -n "$(find "$droot/logs" -path '*snapshot*/exam/exam.sh')" ] \
+     && [ -n "$(find "$droot/logs" -path '*snapshot*/exam/exam-guard.ag')" ] \
+     && grep -q 'exam-guard: private copy ' "$droot/arms/fx/src_pool/mock-r1/stage.log"; then
+    ok "drive: re-executed from a snapshot copy of exam/ under logs/ (exam-guard.ag included: the driven rows staged through the frozen guard)"
   else
     bad "drive: no snapshot re-exec"
   fi
@@ -2488,6 +3063,8 @@ sub="${1:-}"
 case "$sub" in
   freeze) cmd_freeze "$@" ;;
   adopt) cmd_adopt "$@" ;;
+  seal) cmd_seal "$@" ;;
+  guard) cmd_guard "$@" ;;
   plan) cmd_plan "$@" ;;
   stage) cmd_stage "$@" ;;
   run) cmd_run "$@" ;;

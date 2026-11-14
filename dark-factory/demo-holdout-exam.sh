@@ -39,6 +39,11 @@
 #      --resume, HEAD pin, triage hand-off) and kill-by-path; M3: void-check over one fixture arm per verdict,
 #      run-window attribution against a synthetic transcript store, the one-shot re-hunt (recovered, still
 #      failed, turned off), the weekly-limit HALT + --resume + --retry-void, and a VOID zone triaged unmeasured.
+#      #2372: repo isolation (private copies, the seal, the five guard points, the drift classes and every
+#      fail-closed path) through the REAL exam-guard.ag: the exam self-test needs an agentis binary for the guard
+#      (EXAM_GUARD_AGENTIS or PATH). Locally it SKIPs without one; on CI a missing binary is a FAIL. Source guards:
+#      no code dir is ever symlinked into an arm, every guard call site fails closed, the drive snapshot carries
+#      exam-guard.ag, and the agent stays a deterministic one-shot (no prompt / emit / memo).
 #
 # Usage:  dark-factory/demo-holdout-exam.sh
 # Exit: 0 = all assertions hold (SKIPs cleanly when python3 is absent) ; non-zero = a regression.
@@ -61,7 +66,7 @@ skip() { echo "  [SKIP] $*"; }
 for f in truth.tsv map/zones.json map/scope.tsv expected-triage.tsv expected-triage.md; do
   [ -f "$FIX/$f" ] || { note "fixture missing: $FIX/$f" >&2; exit 3; }
 done
-for f in "$EXAM/exam.sh" "$EXAM/exam-helper.py" "$EXAM/profiles/KNOBS" "$EXFIX/agentis-stub.sh" "$EXFIX/truth.tsv"; do
+for f in "$EXAM/exam.sh" "$EXAM/exam-helper.py" "$EXAM/exam-guard.ag" "$EXAM/profiles/KNOBS" "$EXFIX/agentis-stub.sh" "$EXFIX/truth.tsv"; do
   [ -f "$f" ] || { note "exam runner file missing: $f" >&2; exit 3; }
 done
 
@@ -151,6 +156,41 @@ else
   bad "exam.sh embeds heredoc python or lost a killswitch export"
 fi
 
+note "source-guarding the #2372 repo isolation ..."
+# The runner proper = exam.sh up to its self-test (the self-test builds symlinked fixture bases on purpose).
+EXAM_RUNNER="$(awk '/^cmd_self_test\(\) \{$/ { exit } { print }' "$EXAM/exam.sh")"
+links="$(printf '%s\n' "$EXAM_RUNNER" | grep -nE '^[^#]*ln -s[^#]*code' || true)"
+if [ -z "$links" ] && grep -q 'guard_ag stage-copy ' <<< "$EXAM_RUNNER"; then
+  ok "exam.sh never symlinks a code dir into an arm (stage makes a private copy through guard_ag stage-copy)"
+else
+  bad "exam.sh symlinks a code dir (or lost the stage-copy call):"; printf '%s\n' "$links" | head -3
+fi
+# Every guard_ag call site maps a failure to its refusal (die 3 / exit 3), except run_finish's post-run call,
+# whose failure branch is the fail-closed fallback (void.operator + base_guard_after=error).
+sites="$(printf '%s\n' "$EXAM_RUNNER" | awk '
+  /^[[:space:]]*(if ! )?guard_ag [a-z-]+ / { l = $0; getline nx; l = l " " nx
+    if (l ~ /\|\| (die 3|exit 3)/) ok++
+    else if (l ~ /if ! guard_ag post-run / && nx ~ /void\.operator/) fb++
+    else badl = badl "\n" $0 }
+  END { printf "%d %d%s\n", ok, fb, badl }')"
+if [ "$(printf '%s\n' "$sites" | head -1)" = "7 1" ] && [ "$(printf '%s\n' "$sites" | grep -c .)" -eq 1 ] \
+   && grep -q 'base_guard_after=error' <<< "$EXAM_RUNNER"; then
+  ok "every guard_ag call site maps a failure to exit 3 (seal x3, check-base, stage-check, stage-copy, pre-hunt) and run_finish's post-run call falls back to a VOID (base_guard_after=error)"
+else
+  bad "a guard_ag call site does not fail closed (sites: $sites)"
+fi
+if grep -q 'cp "$SELF" "$HELPER" "$PATTERNS" "$EXAM_DIR/exam-guard.ag" ' "$EXAM/exam.sh"; then
+  ok "drive's snapshot carries exam-guard.ag (a driven plan runs the guard frozen with the runner)"
+else
+  bad "drive's snapshot list does not name exam-guard.ag (a driven plan would refuse every stage)"
+fi
+if ! grep -nE '(^|[^[:alnum:]_])(prompt|emit|memo_write|memo_read|recall)[[:space:]]*\(' "$EXAM/exam-guard.ag" > /dev/null \
+   && grep -q '^cb [0-9]*;$' "$EXAM/exam-guard.ag" && grep -q 'go exam-guard.ag --enable-exec) .*# no-pii:' "$EXAM/exam.sh"; then
+  ok "exam-guard.ag is a deterministic one-shot agent (cb declared; no prompt, emit or memo)"
+else
+  bad "exam-guard.ag gained a prompt / emit / memo call, or lost its cb line"
+fi
+
 note "source-guarding the #2262 M3 run-integrity data ..."
 if [ -f "$EXAM/void-patterns.tsv" ] && [ -f "$VOIDFIX/expected.tsv" ] && [ -f "$VOIDFIX/weekly-limit-notice.txt" ]; then
   vp_rows="$(grep -v '^#' "$EXAM/void-patterns.tsv" | grep -c .)"
@@ -185,9 +225,20 @@ else
     bad "triage.py --self-test FAILED (exit $st_rc)"
     printf '%s\n' "$st_out" | sed 's/^/         | /' | tail -25
   fi
+  # #2372: every stage / run guard call runs exam-guard.ag through a real agentis binary (EXAM_GUARD_AGENTIS, else
+  # agentis on PATH). Locally a host with no binary at all SKIPs; on CI (ci.yml installs the latest release) a
+  # missing binary is a FAIL, so a broken install step cannot switch the exam cases off while CI stays green.
+  gbin="${EXAM_GUARD_AGENTIS:-$(command -v agentis 2>/dev/null || true)}"
   if ! command -v git >/dev/null 2>&1 || ! timeout --version 2>/dev/null | grep -q 'GNU coreutils' || [ ! -d /proc/self ]; then
     skip "exam.sh self-test needs git, GNU timeout and /proc — skipped on this host"
+  elif [ -z "$gbin" ] || [ ! -x "$gbin" ]; then
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then
+      bad "exam.sh self-test: no agentis binary for the guard on CI (EXAM_GUARD_AGENTIS='${EXAM_GUARD_AGENTIS:-}') — the install step in ci.yml failed"
+    else
+      skip "exam.sh self-test needs an agentis binary for exam-guard.ag (set EXAM_GUARD_AGENTIS or put agentis on PATH)"
+    fi
   else
+    note "the guard runs on $("$gbin" --version 2>/dev/null | head -1) ($gbin)"
     note "running exam.sh self-test (mock two-zone exam end to end) ..."
     ex_out="$(bash "$EXAM/exam.sh" self-test 2>&1)"; ex_rc=$?
     if [ "$ex_rc" -eq 0 ]; then

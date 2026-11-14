@@ -1,0 +1,623 @@
+cb 5000000;
+// exam-guard.ag — the exam runner's code-tree guard (#2372). Every arm hunts a PRIVATE copy of the contest's code
+// tree, and this agent proves that nothing crossed between arms: it seals a frozen base's code tree into a content
+// manifest, refuses a base or a copy that drifted from it, makes the per-arm copy, and after the hunt records
+// whether the base stayed byte-identical (a base that changed during an arm VOIDs that arm).
+//
+// One-shot (`agentis go`, launched by exam.sh guard_ag), deterministic: no prompt, no emit, no memo. All the
+// logic lives here: the seal's accept rules, the compare, the drift classes, the listing and the refuse / VOID
+// decisions. exam.sh only launches the agent and maps a non-zero exit to its existing refusal. The filesystem
+// work agentis has no builtin for runs through `exec argv` shims (no shell): find (walk + names), sha256sum
+// (content), git (the seal's diff against HEAD), cp / mv / rm (the copy and moving files across the workspace
+// boundary), stat (file type, filesystem type), realpath (where a symlink resolves), pwd (the physical root).
+//
+// Inputs (env, allowlisted by the launcher's exec.env_passthrough):
+//   EXAM_GUARD_MODE       seal | check-base | stage-check | stage-copy | pre-hunt | post-run
+//   EXAM_GUARD_CDIR       <base>/<contest> (absolute); the base code tree is <cdir>/code
+//   EXAM_GUARD_ARMDIR     the arm dir (stage-copy, pre-hunt, post-run); the copy is <arm>/<contest>/code
+//   EXAM_GUARD_CONTEST    the contest id
+//   EXAM_GUARD_ROOT       the exam root (stage-check: the tmpfs refusal)
+//   EXAM_GUARD_LIVE       1 = the arm runs a live backend (stage-check)
+//   EXAM_GUARD_FORCE      1 = seal over an existing code.seal
+//   EXAM_GUARD_NO_GIT     1 = seal a tree that is not a git work tree (no diff against HEAD)
+//   EXAM_GUARD_FULL_LIST  1 = a refusal carries the full listing instead of the first 100 lines
+//   EXAM_TEST_FORCE_TMPFS 1 = treat the exam root as tmpfs (self-test seam; it can only add the refusal)
+//   accept.lst            (workspace file) the seal's --accept values, NUL-separated, relative to code/
+//
+// Records. Every shim output goes through url_encode_component, which leaves only [A-Za-z0-9._~+%-]: a record
+// never holds a raw space, comma, colon, tab or newline, so the `, ` join of to_string(list) and the `:<n>, `
+// split of string_list_freq_csv are exact, and a hostile name is always listed visibly encoded.
+//   walk record     <path>%00<type>%09<mode>[%09<link target>]        (find -printf, records end in NUL)
+//   content record  <sha256>++<path>                                  (sha256sum -z: "<hex>  <path>\0")
+// Paths are ./-relative. A listed path is shown encoded, with %2F shown as `/`.
+//
+// Cost design (measured on v1.32.0, see the bench README, exam section): the walk and the hash are one exec each, the
+// compare is flat set operations (sort_unique_strings + string_list_freq_csv over concatenated lists), and
+// per-element lambdas run only on drift-sized lists. A lambda call clones every live scope, so no lambda runs
+// while a tree-sized value is live in any enclosing scope: tree-sized values exist only inside drift_sets() and
+// seal_snapshot(), which return drift-sized strings.
+//
+// Runtime behaviour this agent relies on (each pinned by an exam.sh self-test case):
+//   - exec output loses its trailing whitespace: every walk record ends in NUL, so only the final newline goes;
+//   - exec output that is not valid UTF-8 arrives empty: an empty walk is an error, never "no entries";
+//   - a thrown error drops everything printed before it: a refusal carries its listing in the error message;
+//   - `throw` exits 1, so exam.sh sees a refusal as a non-zero exit.
+
+// ---------------------------------------------------------------------------------------------------------
+// list helpers (flat builtins only)
+// ---------------------------------------------------------------------------------------------------------
+fn inner(s: string) -> string { return substring(s, 1, len(s) - 1); }
+fn deser(s: string) -> list {
+    if s == "[]" { return []; }
+    return regex_split(", ", inner(s));
+}
+fn cat(a: list, b: list) -> list {
+    if len(a) == 0 { return b; }
+    if len(b) == 0 { return a; }
+    return regex_split(", ", inner(to_string(a)) + ", " + inner(to_string(b)));
+}
+// the elements of a that are also in b (both duplicate-free)
+fn common(a: list, b: list) -> list {
+    if len(a) == 0 { return []; }
+    if len(b) == 0 { return []; }
+    let l = cat(a, b);
+    let k = len(a) + len(b) - len(sort_unique_strings(l));
+    if k == 0 { return []; }
+    let f = string_list_freq_csv(l, k);
+    return regex_split(":2, ", substring(f, 0, len(f) - 2));
+}
+// the elements of a that are not in b (both duplicate-free)
+fn minus(a: list, b: list) -> list {
+    let c = common(a, b);
+    if len(c) == 0 { return a; }
+    if len(c) == len(a) { return []; }
+    let l = cat(a, c);
+    let all = string_list_freq_csv(l, 0);
+    let top = string_list_freq_csv(l, len(c));
+    let rest = substring(all, len(top) + 2, len(all));
+    return regex_split(":1, ", substring(rest, 0, len(rest) - 2));
+}
+fn join_with(xs: list, sep: string) -> string {
+    if len(xs) == 0 { return ""; }
+    let j = reduce(xs, |acc: string, x: string| -> string { return acc + sep + x; }, "");
+    return substring(j, len(sep), len(j));
+}
+fn field(d: string, i: int) -> string { return get(regex_split("\n", d), i); }
+fn show(p: string) -> string { return join_with(regex_split("%2F", p), "/"); }
+fn rx_escape(t: string) -> string { return join_with(regex_split("[+]", join_with(regex_split("[.]", t), "[.]")), "[+]"); }
+fn one_line(s: string) -> string { return trim(get(regex_split("\n", join_with(regex_split("\t", trim(s)), " ")), 0)); }
+fn starts(s: string, p: string) -> bool { return index_of(s, p) == 0; }
+fn ends(s: string, p: string) -> bool {
+    if len(s) < len(p) { return false; }
+    return substring(s, len(s) - len(p), len(s)) == p;
+}
+fn listing_cap() -> int { return 100; }
+
+// ---------------------------------------------------------------------------------------------------------
+// shims (exec argv, no shell)
+// ---------------------------------------------------------------------------------------------------------
+fn ftype(p: string) -> string {
+    return try { trim(exec argv ["stat", "-c", "%F", "--", p]); } catch e { "missing"; };
+}
+fn untruncated(out: string, what: string) -> string {
+    if regex_match("\\n\\[agentis: stdout truncated: [0-9]+ byte\\(s\\) dropped, cap=[0-9]+ bytes\\]$", out) {
+        throw("exam-guard: " + what + ": the runtime truncated the shim output (exec.stdout_max_bytes) — refusing a partial listing");
+    }
+    return out;
+}
+// Copy a file from the workspace to dest (atomically: a sibling .new file, then mv).
+fn put(name: string, text: string, dest: string) -> void {
+    file_write(name, text);
+    try {
+        exec argv timeout 600000 ["cp", "--", name, dest + ".new"];
+        exec argv ["mv", "-f", "--", dest + ".new", dest];
+    } catch e { throw("exam-guard: cannot write " + dest + ": " + one_line(e.message)); };
+}
+fn fetch(src: string, name: string) -> string {
+    return try {
+        exec argv timeout 600000 ["cp", "--", src, name];
+        file_read(name);
+    } catch e { throw("exam-guard: cannot read " + src + ": " + one_line(e.message)); };
+}
+fn undecodable(root: string) -> string {
+    let l = try { exec argv timeout 600000 ["env", "-C", root, "LC_ALL=C.UTF-8", "find", ".", "!", "-regex", ".*", "-fls", "/dev/stdout"]; } catch e { ""; };
+    let names = regex_find_all("\\./[^\\n]*", l);
+    if len(names) == 0 {
+        return "exam-guard: the walk of " + root + " returned no decodable output — refusing (fail closed)";
+    }
+    return "exam-guard: entry names under " + root + " are not valid UTF-8 — refusing (fail closed): " + join_with(names, " | ");
+}
+// path, type, mode and link target of every entry; sorted encoded walk records
+fn walk(root: string) -> list {
+    let w = try {
+        exec argv timeout 600000 ["env", "-C", root, "find", ".", "(", "-type", "l", "-printf", "%p\\0l\\t%m\\t%l\\0\\n", ")", "-o", "-printf", "%p\\0%y\\t%m\\0\\n"];
+    } catch e { throw("exam-guard: cannot walk " + root + ": " + one_line(e.message)); };
+    if len(w) == 0 { throw(undecodable(root)); }
+    let e = url_encode_component(untruncated(w, "walk of " + root));
+    let body = if ends(e, "%0A") { substring(e, 0, len(e) - 3); } else { e; };
+    if !ends(body, "%00") { throw("exam-guard: the walk of " + root + " ends mid-record — refusing (fail closed)"); }
+    return sort_strings(regex_split("%00%0A", substring(body, 0, len(body) - 3)));
+}
+// sha256 of every regular file; sorted encoded content records
+fn content(root: string) -> list {
+    let c = try {
+        exec argv timeout 600000 ["env", "-C", root, "find", ".", "-type", "f", "-exec", "sha256sum", "-z", "--", "{}", "+"];
+    } catch e { throw("exam-guard: cannot hash the files under " + root + ": " + one_line(e.message)); };
+    if len(c) == 0 { return []; }
+    let e = url_encode_component(untruncated(c, "content hash of " + root));
+    if !ends(e, "%00") { throw("exam-guard: the content hash of " + root + " ends mid-record — refusing (fail closed)"); }
+    return sort_strings(regex_split("%00", substring(e, 0, len(e) - 3)));
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// compare: tree-sized values live only in drift_sets()
+// ---------------------------------------------------------------------------------------------------------
+// The sealed manifest (code.manifest in the workspace) against the tree at root.
+// -> "CLEAN\n<stats>" | "DRIFT\n<stats>\n<removed walk>\n<added walk>\n<removed content>\n<added content>"
+fn drift_sets(root: string, sealed_sha: string) -> string {
+    let m = file_read("code.manifest");
+    if sha256_hex(m) != sealed_sha {
+        throw("exam-guard: code.manifest does not match the manifest_sha256 in code.seal — refusing a tampered or half-written seal");
+    }
+    let parts = regex_split("\n", m);
+    if len(parts) != 4 { throw("exam-guard: code.manifest is malformed (expected a header, a walk and a content line)"); }
+    let hdr = get(parts, 0);
+    if !regex_match("^# code\\.manifest v2 entries=[0-9]+ files=[0-9]+$", hdr) { throw("exam-guard: code.manifest has no v2 header"); }
+    if get(parts, 3) != "" { throw("exam-guard: code.manifest does not end after its content line"); }
+    let hent = parse_int(regex_capture("entries=([0-9]+)", hdr, 1));
+    let hfil = parse_int(regex_capture("files=([0-9]+)", hdr, 1));
+    let W = walk(root);
+    let C = content(root);
+    let wser = to_string(W);
+    let cser = to_string(C);
+    let nfiles = len(regex_find_all("%00f%09", wser));
+    if nfiles != len(C) {
+        throw("exam-guard: " + root + ": the content hash lists " + to_string(len(C)) + " files, the walk " + to_string(nfiles) + " — refusing (fail closed)");
+    }
+    let sws = get(parts, 1);
+    let scs = get(parts, 2);
+    let stats = "entries=" + to_string(len(W)) + " files=" + to_string(len(C));
+    let same = if sws == wser { scs == cser; } else { false; };
+    if same {
+        if hent != len(W) { throw("exam-guard: code.manifest header counts disagree with its records"); }
+        if hfil != len(C) { throw("exam-guard: code.manifest header counts disagree with its records"); }
+        return "CLEAN\n" + stats;
+    }
+    let SW = deser(sws);
+    let SC = deser(scs);
+    if hent != len(SW) { throw("exam-guard: code.manifest header counts disagree with its records"); }
+    if hfil != len(SC) { throw("exam-guard: code.manifest header counts disagree with its records"); }
+    let rw = minus(SW, W);
+    let aw = minus(W, SW);
+    let rc = minus(SC, C);
+    let ac = minus(C, SC);
+    // size cross-check: |added| = |union| - |sealed|, |removed| = |union| - |current|
+    let uw = len(sort_unique_strings(cat(SW, W)));
+    let uc = len(sort_unique_strings(cat(SC, C)));
+    let ok1 = if len(aw) == uw - len(SW) { len(rw) == uw - len(W); } else { false; };
+    let ok2 = if len(ac) == uc - len(SC) { len(rc) == uc - len(C); } else { false; };
+    let ok = if ok1 { ok2; } else { false; };
+    if !ok {
+        throw("exam-guard: " + root + ": the set-operation cross-check failed (walk +" + to_string(len(aw)) + " -" + to_string(len(rw)) + " union " + to_string(uw) + ", content +" + to_string(len(ac)) + " -" + to_string(len(rc)) + " union " + to_string(uc) + ") — refusing (fail closed)");
+    }
+    let dstats = stats + " drift_records=walk:+" + to_string(len(aw)) + "/-" + to_string(len(rw)) + ",content:+" + to_string(len(ac)) + "/-" + to_string(len(rc));
+    return "DRIFT\n" + dstats + "\n" + to_string(rw) + "\n" + to_string(aw) + "\n" + to_string(rc) + "\n" + to_string(ac);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// drift classes (drift-sized lists only)
+// ---------------------------------------------------------------------------------------------------------
+// "path%00" tokens of serialized walk records -> bare paths
+fn wtok(ser: string) -> list { return regex_find_all("[^ ,\\[\\]]+%00", ser); }
+fn bare(toks: list) -> list {
+    if len(toks) == 0 { return []; }
+    let s = inner(to_string(toks));
+    return regex_split("%00, ", substring(s, 0, len(s) - 3));
+}
+fn wpaths(ser: string) -> list { return bare(wtok(ser)); }
+fn dpaths(ser: string) -> list { return wpaths(to_string(regex_find_all("[^ ,\\[\\]]+%00d%09[0-7]+", ser))); }
+fn cpaths(ser: string) -> list {
+    let t = regex_find_all("\\+\\+[^ ,\\]]+", ser);
+    if len(t) == 0 { return []; }
+    let s = inner(to_string(t));
+    return regex_split(", \\+\\+", substring(s, 2, len(s)));
+}
+// The one exemption: read-only git commands rewrite the sealed index files without a content change.
+fn index_exempt(p: string) -> bool { return regex_match("^\\.%2F\\.git%2F(?:modules%2F.+%2F)?index$", p); }
+// added (removed) dirs whose parent was not added (removed)
+fn tops(dirs: list) -> list {
+    if len(dirs) == 0 { return []; }
+    let dset = ", " + inner(to_string(dirs)) + ", ";
+    return filter(dirs, |x: string| -> bool {
+        return index_of(dset, ", " + regex_capture("^(.*)%2F", x, 1) + ", ") < 0;
+    });
+}
+fn dir_lines(word: string, top: list, paths: list) -> list {
+    let ser = to_string(paths);
+    return map(top, |t: string| -> string {
+        let n = len(regex_find_all("(?:\\[|, )" + rx_escape(t) + "%2F", ser));
+        return word + " dir (" + to_string(n) + " entries)\t" + show(t) + "/";
+    });
+}
+fn loose(paths: list, top: list) -> list {
+    if len(top) == 0 { return paths; }
+    let rx = "^(?:" + join_with(map(top, |x: string| -> string { return rx_escape(x); }), "|") + ")(?:%2F.*)?$";
+    return filter(paths, |p: string| -> bool { return !regex_match(rx, p); });
+}
+fn meta_line(p: string, rws: string, aws: string) -> string {
+    let rx = "(?:^\\[|, )" + rx_escape(p) + "%00([^ ,\\]]+)";
+    let o = regex_split("%09", regex_capture(rx, rws, 1));
+    let n = regex_split("%09", regex_capture(rx, aws, 1));
+    if get(o, 0) != get(n, 0) { return "modified(type " + get(o, 0) + "→" + get(n, 0) + ")\t" + show(p); }
+    if get(o, 1) != get(n, 1) { return "modified(mode " + get(o, 1) + "→" + get(n, 1) + ")\t" + show(p); }
+    return "modified(target)\t" + show(p);
+}
+// drift_sets() output -> TSV lines `class<TAB>path`: aggregated dirs, added, removed, modified, each byte-sorted
+fn classify(d: string) -> list {
+    let rws = field(d, 2);
+    let aws = field(d, 3);
+    let pr = wpaths(rws);
+    let pa = wpaths(aws);
+    let modw = common(pr, pa);
+    let addw = minus(pa, modw);
+    let remw = minus(pr, modw);
+    let modc = filter(common(cpaths(field(d, 4)), cpaths(field(d, 5))), |p: string| -> bool { return !index_exempt(p); });
+    let atop = tops(common(dpaths(aws), addw));
+    let rtop = tops(common(dpaths(rws), remw));
+    let dirs = sort_strings(cat(dir_lines("added", atop, addw), dir_lines("removed", rtop, remw)));
+    let adds = sort_strings(map(loose(addw, atop), |p: string| -> string { return "added\t" + show(p); }));
+    let rems = sort_strings(map(loose(remw, rtop), |p: string| -> string { return "removed\t" + show(p); }));
+    let mods = sort_strings(cat(map(modw, |p: string| -> string { return meta_line(p, rws, aws); }),
+                                map(modc, |p: string| -> string { return "modified(content)\t" + show(p); })));
+    return cat(cat(dirs, adds), cat(rems, mods));
+}
+// TSV line -> listing line ("added dir ./out/ (3 entries)", "added ./test/x.t.sol")
+fn listing_line(t: string) -> string {
+    let c = regex_capture("^([^\\t]*)\\t", t, 1);
+    let p = substring(t, len(c) + 1, len(t));
+    let dw = regex_capture("^([a-z]+ dir) \\(", c, 1);
+    if dw != "" { return dw + " " + p + " " + substring(c, len(dw) + 1, len(c)); }
+    return c + " " + p;
+}
+fn full_listing(lines: list) -> string { return join_with(map(lines, |t: string| -> string { return listing_line(t); }), "\n") + "\n"; }
+// The first listing_cap() lines, then `... <n> more`, then `full list: <file>`.
+fn capped(full: string, n: int, file: string) -> string {
+    let head = regex_capture("^((?:[^\\n]*\\n){0," + to_string(listing_cap()) + "})", full, 1);
+    let more = if n > listing_cap() { "... " + to_string(n - listing_cap()) + " more\n"; } else { ""; };
+    return head + more + "full list: " + file;
+}
+// The tree at root against the sealed manifest. -> "CLEAN\n<stats>" | "DRIFT\n<stats>\n<n>\n<TSV lines>"
+fn guard_tree(root: string, sealed_sha: string) -> string {
+    let d = drift_sets(root, sealed_sha);
+    if field(d, 0) == "CLEAN" { return d; }
+    let lines = classify(d);
+    if len(lines) == 0 {
+        // Only the exemption explains this: no walk drift, and every content drift path is a sealed git index.
+        let cp = cat(cpaths(field(d, 4)), cpaths(field(d, 5)));
+        let other = filter(cp, |p: string| -> bool { return !index_exempt(p); });
+        let nowalk = if field(d, 2) == "[]" { field(d, 3) == "[]"; } else { false; };
+        if !nowalk { throw("exam-guard: " + root + ": drift records with no listed path — refusing (fail closed)"); }
+        if len(other) > 0 { throw("exam-guard: " + root + ": drift records with no listed path — refusing (fail closed)"); }
+        return "CLEAN\n" + field(d, 1) + " exempt_index_rewrites=" + to_string(len(cp) / 2);
+    }
+    return "DRIFT\n" + field(d, 1) + "\n" + to_string(len(lines)) + "\n" + join_with(lines, "\n");
+}
+fn drift_lines(g: string) -> list { return regex_split("\n", substring(g, len(field(g, 0)) + len(field(g, 1)) + len(field(g, 2)) + 3, len(g))); }
+
+// ---------------------------------------------------------------------------------------------------------
+// the seal
+// ---------------------------------------------------------------------------------------------------------
+// The seal's code.seal (workspace copy); also brings code.manifest into the workspace. -> manifest_sha256
+fn load_seal(cdir: string) -> string {
+    if ftype(cdir + "/code.seal") == "missing" {
+        throw("exam-guard: " + cdir + "/code is not sealed (no code.seal) — seal it first: exam.sh seal --base <base> --contest <id> [--accept <rel>]...");
+    }
+    let s = fetch(cdir + "/code.seal", "code.seal");
+    let sha = regex_capture("(?m)^manifest_sha256=([0-9a-f]{64})$", s, 1);
+    if len(sha) != 64 { throw("exam-guard: " + cdir + "/code.seal carries no manifest_sha256 — refusing"); }
+    let m = fetch(cdir + "/code.manifest", "code.manifest");
+    return sha;
+}
+fn covered(p: string, acc: list) -> bool {
+    return len(filter(acc, |a: string| -> bool {
+        if a == p { return true; }
+        if ends(a, "%2F") { return starts(p, a); }
+        return false;
+    })) > 0;
+}
+// git status of one work tree -> "<status>\t<encoded path>" per difference from HEAD outside node_modules/;
+// a submodule with modified or untracked content is checked recursively (its paths need their own accepts).
+fn git_diffs(dir: string, prefix: string) -> list {
+    let raw = try {
+        exec argv timeout 600000 ["git", "--no-optional-locks", "-C", dir, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching", "--", ".", ":(exclude,glob)**/node_modules/**"];
+    } catch e { throw("exam-guard: seal: git status failed in " + dir + ": " + one_line(e.message)); };
+    let recs = filter(regex_split("\\x00", raw), |r: string| -> bool { return r != ""; });
+    let rows = map(recs, |r: string| -> string { return git_row(r, dir, prefix); });
+    return regex_split("\n", join_with(filter(rows, |x: string| -> bool { return x != ""; }), "\n"));
+}
+fn git_row(r: string, dir: string, prefix: string) -> string {
+    if starts(r, "? ") { return "untracked\t" + url_encode_component(prefix + substring(r, 2, len(r))); }
+    if starts(r, "! ") { return "ignored\t" + url_encode_component(prefix + substring(r, 2, len(r))); }
+    if !starts(r, "1 ") { return "unsupported\t" + url_encode_component(prefix + r); }
+    let xy = regex_capture("^1 ([^ ]+) ", r, 1);
+    let sub = regex_capture("^1 [^ ]+ ([^ ]+) ", r, 1);
+    let path = regex_capture("(?s)^1 (?:[^ ]* ){7}(.*)$", r, 1);
+    if path == "" { return "unsupported\t" + url_encode_component(prefix + r); }
+    if !starts(sub, "S") { return "changed(" + xy + ")\t" + url_encode_component(prefix + path); }
+    let own = if substring(sub, 1, 2) == "C" { "submodule-commit\t" + url_encode_component(prefix + path); } else { ""; };
+    let dirty = if substring(sub, 2, 3) != "." { true; } else { substring(sub, 3, 4) != "."; };
+    if !dirty { return own; }
+    let insub = join_with(filter(git_diffs(dir + "/" + path, prefix + path + "/"), |x: string| -> bool { return x != ""; }), "\n");
+    if own == "" { return insub; }
+    if insub == "" { return own; }
+    return own + "\n" + insub;
+}
+fn row_path(row: string) -> string { return substring(row, index_of(row, "\t") + 1, len(row)); }
+fn row_show(row: string) -> string { return substring(row, 0, index_of(row, "\t")) + " " + show(row_path(row)); }
+// -> "<git_head>\n<accepted rows>"; throws listing every uncovered row
+fn git_check(root: string, phys: string, acc: list) -> string {
+    let top = try { trim(exec argv ["git", "--no-optional-locks", "-C", root, "rev-parse", "--show-toplevel"]); } catch e {
+        throw("exam-guard: seal: " + root + " is not a git work tree — seal a non-git tree with --no-git");
+    };
+    if top != phys {
+        throw("exam-guard: seal: " + root + " is not the top of its git work tree (" + top + ") — seal it with --no-git or point code/ at the work tree root");
+    }
+    let head = try { trim(exec argv ["git", "--no-optional-locks", "-C", root, "rev-parse", "HEAD"]); } catch e { "-"; };
+    let rows = filter(git_diffs(root, ""), |x: string| -> bool { return x != ""; });
+    let bad = filter(rows, |r: string| -> bool {
+        if starts(r, "unsupported\t") { return true; }
+        return !covered(row_path(r), acc);
+    });
+    if len(bad) > 0 {
+        throw("exam-guard: seal refused: " + to_string(len(bad)) + " difference(s) from git HEAD are not covered by an --accept (exact path, or a dir ending in /; renames and unmerged paths are always refused):\n" + join_with(map(bad, |r: string| -> string { return "  " + row_show(r); }), "\n"));
+    }
+    return head + "\n" + join_with(map(rows, |r: string| -> string { return "accepted git difference: " + row_show(r); }), "\n");
+}
+// Walk + hash the tree, write the manifest into the workspace.
+// -> "<entries> <files> <manifest sha256>\n<node_modules entries>\n<serialized symlink records>"
+fn seal_snapshot(root: string) -> string {
+    let W = walk(root);
+    let C = content(root);
+    if len(C) == 0 { throw("exam-guard: seal refused: " + root + " holds no regular file — an empty tree is never sealed"); }
+    let wser = to_string(W);
+    let cser = to_string(C);
+    let nfiles = len(regex_find_all("%00f%09", wser));
+    if nfiles != len(C) {
+        throw("exam-guard: " + root + ": the content hash lists " + to_string(len(C)) + " files, the walk " + to_string(nfiles) + " — refusing (fail closed)");
+    }
+    let m = "# code.manifest v2 entries=" + to_string(len(W)) + " files=" + to_string(len(C)) + "\n" + wser + "\n" + cser + "\n";
+    file_write("code.manifest", m);
+    let nm = len(regex_find_all("(?:\\[|, )[^ ,\\]]*%2Fnode_modules(?:%2F[^ ,\\]]*)?%00", wser));
+    let links = to_string(regex_find_all("[^ ,\\[\\]]+%00l%09[0-7]+%09[^ ,\\[\\]]+", wser));
+    return to_string(len(W)) + " " + to_string(len(C)) + " " + sha256_hex(m) + "\n" + to_string(nm) + "\n" + links;
+}
+// Symlinks whose target is absolute or resolves outside the root. -> "<kind>\t<encoded path w/o ./>\t<target>" rows
+fn link_rows(root: string, phys: string, links_ser: string) -> list {
+    let links = deser(links_ser);
+    if len(links) == 0 { return []; }
+    let absl = map(filter(links, |r: string| -> bool { return regex_match("%00l%09[0-7]+%09%2F", r); }), |r: string| -> string {
+        return "absolute symlink\t" + substring(regex_capture("^(.*)%00l%09", r, 1), 4, 99999999) + "\t" + show(regex_capture("%00l%09[0-7]+%09(.*)$", r, 1));
+    });
+    let res = try {
+        exec argv timeout 600000 ["env", "-C", root, "find", ".", "-type", "l", "-printf", "\\n%p\\0", "-exec", "realpath", "-m", "-z", "--", "{}", ";"];
+    } catch e { throw("exam-guard: seal: cannot resolve the symlinks under " + root + ": " + one_line(e.message)); };
+    let e = url_encode_component(res);
+    let pairs = filter(regex_split("%00%0A", substring(e, 3, len(e) - 3)), |x: string| -> bool { return x != ""; });
+    let pp = url_encode_component(phys);
+    let esc = map(filter(pairs, |x: string| -> bool {
+        let r = substring(x, index_of(x, "%00") + 3, len(x));
+        if r == pp { return false; }
+        return !starts(r, pp + "%2F");
+    }), |x: string| -> string {
+        return "escaping symlink\t" + substring(substring(x, 0, index_of(x, "%00")), 4, 99999999) + "\t" + show(substring(x, index_of(x, "%00") + 3, len(x)));
+    });
+    return cat(absl, esc);
+}
+fn seal_mode(cdir: string, force: string, nogit: string) -> void {
+    let root = cdir + "/code";
+    if ftype(cdir + "/code.seal") != "missing" {
+        if force != "1" { throw("exam-guard: " + cdir + " is already sealed (code.seal) — --force re-seals it"); }
+    }
+    let phys = try { trim(exec argv ["env", "-C", root, "pwd", "-P"]); } catch e {
+        throw("exam-guard: seal: cannot enter " + root + " (missing or dangling code link?): " + one_line(e.message));
+    };
+    let araw = try { file_read("accept.lst"); } catch e { ""; };
+    let acc = map(filter(regex_split("\\x00", araw), |a: string| -> bool { return a != ""; }), |a: string| -> string { return url_encode_component(a); });
+    let g = if nogit == "1" { "-\n"; } else { git_check(root, phys, acc); };
+    let snap = seal_snapshot(root);
+    let lrows = link_rows(root, phys, get(regex_split("\n", snap), 2));
+    let lbad = filter(lrows, |r: string| -> bool { return !covered(get(regex_split("\t", r), 1), acc); });
+    if len(lbad) > 0 {
+        throw("exam-guard: seal refused: " + to_string(len(lbad)) + " symlink(s) point outside the tree and are not covered by an --accept:\n" + join_with(map(lbad, |r: string| -> string {
+            let f = regex_split("\t", r);
+            return "  " + get(f, 0) + " " + show(get(f, 1)) + " -> " + get(f, 2);
+        }), "\n"));
+    }
+    let s0 = regex_split(" ", field(snap, 0));
+    let utc = now_iso();
+    let accepted = if len(acc) == 0 { "-"; } else { join_with(acc, ","); };
+    let gl = filter(regex_split("\n", g), |l: string| -> bool { return starts(l, "accepted "); });
+    let ll = map(lrows, |r: string| -> string {
+        let f = regex_split("\t", r);
+        return "accepted " + get(f, 0) + ": " + show(get(f, 1)) + " -> " + get(f, 2);
+    });
+    let body = cat(cat(["git_head=" + field(g, 0)], cat(gl, ll)), ["node_modules_entries=" + field(snap, 1)]);
+    let setup = "# code.setup.txt: the setup the seal of " + root + " accepted (exam-guard, " + utc + ")\n" + join_with(body, "\n") + "\n";
+    put("code.setup.txt", setup, cdir + "/code.setup.txt");
+    exec argv timeout 600000 ["cp", "--", "code.manifest", cdir + "/code.manifest.new"];
+    exec argv ["mv", "-f", "--", cdir + "/code.manifest.new", cdir + "/code.manifest"];
+    let seal = "manifest_sha256=" + get(s0, 2) + "\nentries=" + get(s0, 0) + "\nfiles=" + get(s0, 1) + "\ngit_head=" + field(g, 0)
+        + "\naccepted=" + accepted + "\ncode_phys=" + phys + "\nsealed_utc=" + utc + "\n";
+    put("code.seal", seal, cdir + "/code.seal");
+    print("exam-guard: sealed " + root + " (entries=" + get(s0, 0) + " files=" + get(s0, 1) + " git_head=" + field(g, 0)
+        + " accepted=" + accepted + " node_modules_entries=" + field(snap, 1) + " cb_spent=" + to_string(introspect.cb_spent) + ")");
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// the guard modes
+// ---------------------------------------------------------------------------------------------------------
+fn check_base(cdir: string, full: string) -> void {
+    let root = cdir + "/code";
+    let sha = load_seal(cdir);
+    let g = guard_tree(root, sha);
+    if field(g, 0) == "CLEAN" {
+        print("exam-guard: the base " + root + " matches its seal (" + field(g, 1) + " cb_spent=" + to_string(introspect.cb_spent) + ")");
+        return;
+    }
+    let n = parse_int(field(g, 2));
+    let listing = full_listing(drift_lines(g));
+    let file = cdir + "/code.drift.txt";
+    put("code.drift.txt", listing, file);
+    let shown = if full == "1" { listing + "full list: " + file; } else { capped(listing, n, file); };
+    throw("exam-guard: the base " + root + " DRIFTED from its seal: " + to_string(n) + " listed path(s) (" + field(g, 1) + " cb_spent=" + to_string(introspect.cb_spent) + "):\n" + shown);
+}
+fn stage_check(cdir: string, root: string, live: string, force_tmpfs: string) -> void {
+    if live == "1" {
+        let fs = try { trim(exec argv ["stat", "-f", "-c", "%T", "--", root]); } catch e { "unknown"; };
+        let tmpfs = if fs == "tmpfs" { true; } else { force_tmpfs == "1"; };
+        if tmpfs {
+            throw("exam-guard: refusing a live arm on tmpfs (" + root + "): every arm keeps a private copy of the code tree, and a full /tmp stops every session on the host — use an exam root on disk");
+        }
+    }
+    check_base(cdir, "0");
+}
+fn copy_meta(sm: string, key: string) -> string { return regex_capture("(?m)^" + key + "=(.*)$", sm, 1); }
+fn stage_copy(cdir: string, arm: string, contest: string) -> void {
+    let base = cdir + "/code";
+    let copy = arm + "/" + contest + "/code";
+    let sha = load_seal(cdir);
+    if ftype(copy) != "missing" { throw("exam-guard: " + copy + " already exists — refusing to copy over it"); }
+    let pr = try { exec argv timeout 600000 ["env", "-C", base, "find", ".", "-type", "f", "-printf", "%p\\0", "-quit"]; } catch e { ""; };
+    let probe = if len(pr) > 0 { substring(pr, 0, len(pr) - 1); } else { ""; };
+    let mode = if probe == "" { "full"; } else {
+        try {
+            exec argv ["cp", "--reflink=always", "--", base + "/" + probe, arm + "/.reflink-probe"];
+            "reflink";
+        } catch e { "full"; };
+    };
+    try { exec argv ["rm", "-f", "--", arm + "/.reflink-probe"]; } catch e { ""; };
+    let t0 = now_ms();
+    try { exec argv timeout 1800000 ["cp", "-a", "--reflink=auto", "--", base + "/.", copy]; } catch e {
+        throw("exam-guard: copying " + base + " to " + copy + " failed: " + one_line(e.message));
+    };
+    let ms = now_ms() - t0;
+    let g = guard_tree(copy, sha);
+    if field(g, 0) != "CLEAN" {
+        let n = parse_int(field(g, 2));
+        let listing = full_listing(drift_lines(g));
+        put("guard-drift.txt", listing, arm + "/guard-drift.txt");
+        throw("exam-guard: the private copy " + copy + " does not match the seal (an incomplete copy?): " + to_string(n) + " listed path(s):\n" + capped(listing, n, arm + "/guard-drift.txt"));
+    }
+    let frac = ms - (ms / 1000) * 1000;
+    let fs = if frac < 10 { "00" + to_string(frac); } else { if frac < 100 { "0" + to_string(frac); } else { to_string(frac); }; };
+    let secs = to_string(ms / 1000) + "." + fs;
+    let ent = regex_capture("entries=([0-9]+)", field(g, 1), 1);
+    put(".stage.copy", "code_copy=" + mode + "\ncode_copy_s=" + secs + "\ncode_manifest_sha256=" + sha + "\ncode_entries=" + ent + "\n", arm + "/.stage.copy");
+    print("exam-guard: private copy " + copy + " (" + mode + ", " + secs + " s, " + field(g, 1) + ", matches the seal, cb_spent=" + to_string(introspect.cb_spent) + ")");
+}
+fn staged_meta(arm: string, contest: string) -> string {
+    let copy = arm + "/" + contest + "/code";
+    let t = ftype(copy);
+    if t != "directory" {
+        throw("exam-guard: " + copy + " is not a private copy (" + t + "): this arm was staged before #2372 — re-stage it");
+    }
+    let sm = fetch(arm + "/stage.meta", "stage.meta");
+    if !regex_match("(?m)^code_copy=(reflink|full)$", sm) {
+        throw("exam-guard: " + arm + "/stage.meta records no code_copy: this arm was staged before #2372 — re-stage it");
+    }
+    return sm;
+}
+fn pre_hunt(cdir: string, arm: string, contest: string) -> void {
+    let copy = arm + "/" + contest + "/code";
+    let sm = staged_meta(arm, contest);
+    let sha = load_seal(cdir);
+    if copy_meta(sm, "code_manifest_sha256") != sha {
+        throw("exam-guard: the base " + cdir + "/code was re-sealed after this arm was staged — re-stage it");
+    }
+    let g = guard_tree(copy, sha);
+    if field(g, 0) != "CLEAN" {
+        let n = parse_int(field(g, 2));
+        let listing = full_listing(drift_lines(g));
+        put("guard-drift.txt", listing, arm + "/guard-drift.txt");
+        throw("exam-guard: the private copy " + copy + " DRIFTED after stage: " + to_string(n) + " listed path(s) — refusing to hunt on it:\n" + capped(listing, n, arm + "/guard-drift.txt"));
+    }
+    print("exam-guard: the private copy " + copy + " matches the seal (" + field(g, 1) + " cb_spent=" + to_string(introspect.cb_spent) + ")");
+}
+// -> "ok" | "drift:<n>\n<full listing>" | "error\n<message>"
+fn post_base(cdir: string, staged_sha: string) -> string {
+    return try {
+        let sha = load_seal(cdir);
+        if sha != staged_sha { throw("the base was re-sealed during this arm (code.seal manifest_sha256 changed)"); }
+        let g = guard_tree(cdir + "/code", sha);
+        if field(g, 0) == "CLEAN" { "ok"; } else { "drift:" + field(g, 2) + "\n" + full_listing(drift_lines(g)); };
+    } catch e { "error\n" + trim(e.message); };
+}
+// -> "+<a> ~<m> -<d>\n<TSV>" | "error\n<message>"
+fn post_copy(copy: string, sha: string) -> string {
+    return try {
+        let g = guard_tree(copy, sha);
+        if field(g, 0) == "CLEAN" { "+0 ~0 -0\n"; } else {
+            let lines = drift_lines(g);
+            let a = len(filter(lines, |l: string| -> bool { return starts(l, "added"); }));
+            let m = len(filter(lines, |l: string| -> bool { return starts(l, "modified"); }));
+            let r = len(filter(lines, |l: string| -> bool { return starts(l, "removed"); }));
+            "+" + to_string(a) + " ~" + to_string(m) + " -" + to_string(r) + "\n" + join_with(lines, "\n") + "\n";
+        };
+    } catch e { "error\n" + trim(e.message); };
+}
+fn post_run(cdir: string, arm: string, contest: string) -> void {
+    let sm = try { fetch(arm + "/stage.meta", "stage.meta"); } catch e { ""; };
+    let staged_sha = copy_meta(sm, "code_manifest_sha256");
+    let b = post_base(cdir, staged_sha);
+    let bword = field(b, 0);
+    let bres = if bword == "ok" { "ok"; } else { if bword == "error" { "error"; } else { bword; }; };
+    if bres != "ok" {
+        let body = substring(b, len(bword) + 1, len(b));
+        put("base-drift.txt", body, arm + "/base-drift.txt");
+        let reason = if bres == "error" {
+            "exam-guard base-unverified: " + one_line(body) + " (base-drift.txt)";
+        } else {
+            "exam-guard base-drift: " + substring(bres, 6, len(bres)) + " paths changed in the base during this arm (base-drift.txt)";
+        };
+        put("void.operator", reason + "\n", arm + "/void.operator");
+    }
+    let c = post_copy(arm + "/" + contest + "/code", staged_sha);
+    let cword = field(c, 0);
+    let delta = if cword == "error" { "error"; } else { cword; };
+    let tsv = if cword == "error" { "error\t" + one_line(substring(c, 6, len(c))) + "\n"; } else { substring(c, len(cword) + 1, len(c)); };
+    put("repo-delta.tsv", tsv, arm + "/repo-delta.tsv");
+    let gm = "code_copy=" + copy_meta(sm, "code_copy") + "\ncode_manifest_sha256=" + staged_sha + "\nbase_guard_after=" + bres
+        + "\nrepo_delta=" + delta + "\nguard_cb_spent=" + to_string(introspect.cb_spent) + "\n";
+    put(".guard.meta", gm, arm + "/.guard.meta");
+    print("exam-guard: post-run base_guard_after=" + bres + " repo_delta=" + delta + " cb_spent=" + to_string(introspect.cb_spent));
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// dispatch
+// ---------------------------------------------------------------------------------------------------------
+let mode = getenv("EXAM_GUARD_MODE");
+let cdir = getenv("EXAM_GUARD_CDIR");
+let arm = getenv("EXAM_GUARD_ARMDIR");
+let contest = getenv("EXAM_GUARD_CONTEST");
+if !starts(cdir, "/") { throw("exam-guard: EXAM_GUARD_CDIR must be an absolute path (got '" + cdir + "')"); }
+if mode == "seal" {
+    seal_mode(cdir, getenv("EXAM_GUARD_FORCE"), getenv("EXAM_GUARD_NO_GIT"));
+}
+if mode == "check-base" {
+    check_base(cdir, getenv("EXAM_GUARD_FULL_LIST"));
+}
+if mode == "stage-check" {
+    stage_check(cdir, getenv("EXAM_GUARD_ROOT"), getenv("EXAM_GUARD_LIVE"), getenv("EXAM_TEST_FORCE_TMPFS"));
+}
+let arm_mode = if mode == "stage-copy" { true; } else { if mode == "pre-hunt" { true; } else { mode == "post-run"; }; };
+let base_mode = if mode == "seal" { true; } else { if mode == "check-base" { true; } else { mode == "stage-check"; }; };
+if arm_mode {
+    if !starts(arm, "/") { throw("exam-guard: EXAM_GUARD_ARMDIR must be an absolute path (got '" + arm + "')"); }
+    if contest == "" { throw("exam-guard: EXAM_GUARD_CONTEST is empty"); }
+}
+if mode == "stage-copy" { stage_copy(cdir, arm, contest); }
+if mode == "pre-hunt" { pre_hunt(cdir, arm, contest); }
+if mode == "post-run" { post_run(cdir, arm, contest); }
+if !arm_mode {
+    if !base_mode { throw("exam-guard: unknown EXAM_GUARD_MODE '" + mode + "'"); }
+}
