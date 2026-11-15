@@ -34,7 +34,9 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   - The agent runs through `DF_CELL_SCOPE_AGENTIS` (default: agentis on PATH), separate from `--agentis`, so a
     stubbed prover still gets a real scope agent; no binary or a refusal ends the cell with exit 3 before any forge
     call. There is no shell fallback (it would be a second copy of the rule). CI exports the binary it already
-    installs for the exam guard; colony-lint resolves it once for the tests that narrow PATH.
+    installs for the exam guard; colony-lint resolves it once for the tests that narrow PATH. The exam runner's
+    `profiles/KNOBS` never clears it (`!DF_CELL_SCOPE_AGENTIS`, host plumbing like PATH): clearing it failed every
+    deep cell of an exam arm on a host without agentis on PATH.
   - Known limit (closed by a survey, no code): a kept file in the compile scope that imports a removed `*.t.sol`
     would break the prebuild; none of the 13 such importers in 228 surveyed Foundry roots is compiled.
   - Tests: `tools/test-deep-cell-scope.sh` (real agentis, stub forge, numa / Fraxlend / flat / nested layouts,

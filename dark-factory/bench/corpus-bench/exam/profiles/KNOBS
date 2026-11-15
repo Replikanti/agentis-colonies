@@ -29,5 +29,9 @@ ANTHROPIC_* CLAUDE_* DISABLE_* MCP_* VERTEX_* AWS_BEARER_TOKEN_*
 !HOME !TMPDIR !PATH !PWD !OLDPWD !SHELL !USER !LOGNAME !LANG !TERM !IFS !BASH_SOURCE
 !XDG_STATE_HOME !XDG_CONFIG_HOME !XDG_DATA_HOME !XDG_CACHE_HOME !XDG_RUNTIME_DIR
 !DARK_FACTORY_DIR
+# the binary every deep cell runs cell-scope.ag with (#2374); it only locates a binary, like PATH (a missing or
+# wrong one fails the cell closed, it never changes a verdict), and clearing it fails every deep cell of an arm on
+# a host without agentis on PATH
+!DF_CELL_SCOPE_AGENTIS
 # auth the flat-cyborg backend may need (recorded masked in run.meta, never by value)
 !CLAUDE_CODE_OAUTH_TOKEN
