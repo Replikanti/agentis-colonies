@@ -548,6 +548,36 @@ else
     fail "cell_scope_stub_cannot_fake" "rc=$RC builds=$(n_calls build)"
 fi
 
+# --- cell_scope_input_guards_fail_closed ------------------------------------------------------------------
+# The runner refuses a non-Foundry --repo itself (exit 2), so the agent's own input guards are reached only by a
+# direct call: the launcher's workspace and config, one `agentis go`.
+scope_direct() {  # scope_direct <name> <CELL_SCOPE_REPO value>: sets RC (99 = the workspace could not be set up) and LOG
+    _sd_ws="$WORK/direct-$1"; LOG="$WORK/direct-$1.log"; RC=0
+    rm -rf "$_sd_ws"; mkdir -p "$_sd_ws"
+    if ! (cd "$_sd_ws" && "$DF_CELL_SCOPE_AGENTIS" init) > /dev/null 2>&1 || [ ! -d "$_sd_ws/.agentis/sandbox" ]; then
+        RC=99; return 0
+    fi
+    printf 'llm.backend = mock\nexec.sandbox_profile = basic\nexec.env_passthrough = CELL_SCOPE_REPO\nexec.stdout_max_bytes = 0\n' \
+        >> "$_sd_ws/.agentis/config"
+    cp "$AGENT" "$_sd_ws/cell-scope.ag"
+    (cd "$_sd_ws" && exec env CELL_SCOPE_REPO="$2" "$DF_CELL_SCOPE_AGENTIS" go cell-scope.ag --enable-exec) > "$LOG" 2>&1 || RC=$?
+    AGENT_RUNS=$((AGENT_RUNS + 1))
+    return 0
+}
+NF="$WORK/nofoundry"; sol "$NF/contracts/Test/Keep.t.sol"; _nf_sha="$(sha_of "$NF/contracts/Test/Keep.t.sol")"
+scope_direct nofoundry "$NF"
+_nf_rc="$RC"; _nf_ok=0
+if [ "$RC" != 0 ] && [ "$RC" != 99 ] && grep -q 'is not a Foundry project' "$LOG" && [ -f "$NF/contracts/Test/Keep.t.sol" ] \
+   && [ "$(sha_of "$NF/contracts/Test/Keep.t.sol")" = "$_nf_sha" ] && [ ! -e "$WORK/direct-nofoundry/.agentis/sandbox/dropped-tests.lst" ]; then
+    _nf_ok=1
+fi
+scope_direct relative "contracts"
+if [ "$_nf_ok" = 1 ] && [ "$RC" != 0 ] && [ "$RC" != 99 ] && grep -q 'must be an absolute path' "$LOG"; then
+    pass "cell_scope_input_guards_fail_closed: a root without foundry.toml and a relative CELL_SCOPE_REPO are refused, nothing removed"
+else
+    fail "cell_scope_input_guards_fail_closed" "no-foundry rc=$_nf_rc ok=$_nf_ok, relative rc=$RC"; tail -3 "$LOG" | sed 's/^/      /'
+fi
+
 # --- prebuild_skip_list_roundtrip -------------------------------------------------------------------------
 RT="$WORK/rt"; toml "$RT" src; sol "$RT/src/Vault.sol" 'contract Vault {}'
 printf '%s\0' "test/a b.sol" "test/new${NL}line.sol" "test/[x].sol" "test/*.sol" "test/-dash.sol" > "$WORK/rt.lst"
