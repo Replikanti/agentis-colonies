@@ -19,7 +19,8 @@ jobs:
       # binary, and on CI a missing binary FAILS it. This installs the LATEST storefront release (the release
       # install.sh and `agentis update` fetch; no version or hash pinned here), checked against that release's own
       # published sha256, OUTSIDE PATH: only EXAM_GUARD_AGENTIS sees it, so the checks that skip without agentis
-      # on PATH stay unchanged.
+      # on PATH stay unchanged. #2374: every deep invariant cell runs cell-scope.ag through the same binary, as
+      # DF_CELL_SCOPE_AGENTIS (tools/test-deep-cell-scope.sh FAILS on CI without it).
       - name: Install agentis for the exam guard (latest release, sha256-checked, outside PATH)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -34,6 +35,7 @@ jobs:
           chmod +x agentis
           ./agentis --version
           echo "EXAM_GUARD_AGENTIS=$d/agentis" >> "$GITHUB_ENV"
+          echo "DF_CELL_SCOPE_AGENTIS=$d/agentis" >> "$GITHUB_ENV"
 
       # The ubuntu-26.04 runner ships uutils coreutils, whose `timeout` is not GNU: exam.sh refuses to run there and
       # the held-out exam self-test (#2262, #2372) never ran on CI. Swap in GNU coreutils; demo-holdout-exam.sh

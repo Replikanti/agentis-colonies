@@ -77,6 +77,15 @@ DF_LINT_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/colony-lint-df.XXXXXX")"
 export DARK_FACTORY_DIR="$DF_LINT_SCRATCH"
 trap 'rm -rf "$DF_LINT_SCRATCH"' EXIT
 
+# --- Dark Factory deep-cell scope agent (#2374) ---
+# Every deep invariant cell (run-invariant-hunt.sh, also reached through
+# run-zone-hunt.sh's deep stage) runs auditor/agents/cell-scope.ag through
+# DF_CELL_SCOPE_AGENTIS, else agentis on PATH. Resolve it once here so the
+# tests that narrow PATH (stub forge / stub agentis dirs) still find the real
+# binary; CI sets it from the install step in ci.yml.
+DF_CELL_SCOPE_AGENTIS="${DF_CELL_SCOPE_AGENTIS:-$(command -v agentis || true)}"
+export DF_CELL_SCOPE_AGENTIS
+
 # --- Discover federations ---
 # A federation is a top-level directory with a README.md, excluding dotdirs,
 # tools/, and templates/ (the templates/ tree from #322 is a contributor-only

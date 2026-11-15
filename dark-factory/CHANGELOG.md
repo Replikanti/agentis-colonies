@@ -16,6 +16,34 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **The deep cell copy no longer inherits Foundry tests outside the top level of `test/` (#2374).**
+  `run-invariant-hunt.sh` removed only `test/*.t.sol` from the staged copy, and `evm-harness/forge-prebuild.sh`
+  skipped every `*.sol` under `test/`. A stray PoC elsewhere (numa-audit keeps tests in `contracts/Test/`, which is
+  its `src`; a Fraxlend-based tree keeps them in `src/test/`) stayed in the copy, broke the viaIR prebuild, and
+  every deep cell of the arm ended `HARNESS_ERROR`.
+  - New one-shot agent `auditor/agents/cell-scope.ag` owns the one rule: it removes every `*.t.sol` (files, links,
+    dangling links) outside `./lib/`, `./dependencies/` and `node_modules/` / `.git/` at any depth, proves with a
+    second walk that none is left, and writes `$RUN/dropped-tests.lst` and `$RUN/prebuild-skip.lst` (every `*.sol`
+    left under `test/`, the gate's #1069 set). Its walks run through constant POSIX `sh -c` trampolines (`find
+    -print0`, `xargs -0 rm`), and an undecodable or cut walk is refused (fail closed). Flat in tree size: 546 CB and
+    about 0.28 s per cell on trees of 10 to 2005 entries.
+  - `forge-prebuild.sh` takes a required `--skip-list <file>` and no longer enumerates files; a missing list is a
+    no-op. Projects whose tests sit only at the top of `test/` see the same removed files and byte-identical
+    `--skip` arguments; nested `test/**` tests are now removed instead of skipped, and the compiled set stays the
+    same.
+  - The agent runs through `DF_CELL_SCOPE_AGENTIS` (default: agentis on PATH), separate from `--agentis`, so a
+    stubbed prover still gets a real scope agent; no binary or a refusal ends the cell with exit 3 before any forge
+    call. There is no shell fallback (it would be a second copy of the rule). CI exports the binary it already
+    installs for the exam guard; colony-lint resolves it once for the tests that narrow PATH. The exam runner's
+    `profiles/KNOBS` never clears it (`!DF_CELL_SCOPE_AGENTIS`, host plumbing like PATH): clearing it failed every
+    deep cell of an exam arm on a host without agentis on PATH.
+  - Known limit (closed by a survey, no code): a kept file in the compile scope that imports a removed `*.t.sol`
+    would break the prebuild; none of the 13 such importers in 228 surveyed Foundry roots is compiled.
+  - Tests: `tools/test-deep-cell-scope.sh` (real agentis, stub forge, numa / Fraxlend / flat / nested layouts,
+    hostile names, fail-closed paths, gate parity; an optional real viaIR forge leg) and a new
+    `prebuild_requires_skip_list` case in `tools/test-invariant-viair-gate.sh`.
+  - **Requires:** agentis >= 1.32.0 for every deep invariant cell (the agent's builtins and runtime behaviour as
+    pinned by its test; the same floor `exam.sh` states for exam-guard.ag).
 - **Exam arms no longer share the base code tree (#2372).** `exam.sh stage` symlinked every arm's
   `<contest>/code` to the frozen base, so whatever one arm wrote into the tree (PoC tests, forge build output with the
   ABI of PoCs long gone, a git stash) was visible to every later arm on that base, and a stray PoC broke a later

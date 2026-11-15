@@ -11,7 +11,12 @@
 #
 # Usage:
 #   forge-prebuild.sh --repo <staged repo> --source-repo <original --repo> --warm-dir <dir> \
-#                     --heartbeat <file> --log <file>
+#                     --heartbeat <file> --log <file> --skip-list <file>
+#
+# --skip-list (#2374, required): the NUL-separated `test/...` paths forge skips, one `--skip` each, in list order.
+# auditor/agents/cell-scope.ag writes it (prebuild-skip.lst) from the same rule it prunes the staged copy with, so
+# the copy and the prebuild cannot disagree; this shim no longer enumerates files itself. A missing or unreadable
+# list is a no-op (via_ir=0), never a build with a guessed scope.
 #
 # Stdout: `key=value` facts, one per line. Always exits 0; the build's rc travels in the facts.
 #   via_ir=0                     not a viaIR target (or no forge / `forge config` failed): nothing else printed
@@ -48,7 +53,7 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-REPO="" ; SRC_REPO="" ; WARM="" ; HB="" ; LOG=""
+REPO="" ; SRC_REPO="" ; WARM="" ; HB="" ; LOG="" ; SKIP_LIST=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
@@ -56,6 +61,7 @@ while [ $# -gt 0 ]; do
     --warm-dir) WARM="${2:-}"; shift 2 ;;
     --heartbeat) HB="${2:-}"; shift 2 ;;
     --log) LOG="${2:-}"; shift 2 ;;
+    --skip-list) SKIP_LIST="${2:-}"; shift 2 ;;
     *) echo "forge-prebuild: unknown arg $1 — skipping the prebuild" >&2; echo "via_ir=0"; exit 0 ;;
   esac
 done
@@ -65,6 +71,7 @@ noop() { note "$1 — no prebuild (today's gate path)"; echo "via_ir=0"; exit 0;
 
 [ -n "$REPO" ] && [ -d "$REPO" ] && [ -f "$REPO/foundry.toml" ] || noop "--repo is not a foundry project"
 [ -n "$WARM" ] && [ -n "$HB" ] && [ -n "$LOG" ] || noop "--warm-dir/--heartbeat/--log required"
+[ -n "$SKIP_LIST" ] && [ -f "$SKIP_LIST" ] && [ -r "$SKIP_LIST" ] || noop "--skip-list <file> required (missing or unreadable: '$SKIP_LIST')"
 REPO="$(cd "$REPO" && pwd)"
 [ -n "$SRC_REPO" ] && [ -d "$SRC_REPO" ] || SRC_REPO="$REPO"
 command -v forge >/dev/null 2>&1 || noop "forge not on PATH"
@@ -188,13 +195,12 @@ if [ "$SHARE" = 1 ] && [ -f "$KDIR/complete" ]; then
   esac
 fi
 
-# --- build (the gate's #1069 isolation: every other test/*.sol is skipped; no harness exists yet) -----------
+# --- build (the gate's #1069 isolation: every test/*.sol is skipped; no harness exists yet) -----------------
+# One --skip per NUL-separated --skip-list entry, verbatim (`read -d ''` works on bash 3.2).
 SKIP_ARGS=()
-if [ -d "$REPO/test" ]; then
-  while IFS= read -r _tf; do
-    [ -n "$_tf" ] && SKIP_ARGS+=(--skip "${_tf#"$REPO"/}")
-  done < <(find "$REPO/test" -type f -name '*.sol' 2>/dev/null)
-fi
+while IFS= read -r -d '' _tf || [ -n "$_tf" ]; do
+  [ -n "$_tf" ] && SKIP_ARGS+=(--skip "$_tf")
+done < "$SKIP_LIST"
 if [ "$WARM_HIT" = 0 ] && [ -f "$SLOT_LIB" ]; then
   # shellcheck source=../lib/forge-slot.sh
   # shellcheck disable=SC1091
