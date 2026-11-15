@@ -115,6 +115,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Opt-in attacker-model step for breadth hunt cells (#2373, default OFF).** With `ATTACKER_MODEL=1`,
+  `hunter.ag` asks the cell to write down, for each in-scope function and before any mechanism, who can call it
+  and what they control, as one `PRECOND|<file:function>|caller=..|state=..|timing=..|config=..|input=..` line.
+  Each `CANDIDATE|` line then names the field its mechanism exploits, and every `no-loss` or `guard` dismissal is
+  re-argued against those fields and logged as `RECHECK|<file:function[:line]>|<no-loss|guard>|<fields>|<kept|reopened>`.
+  - Why: in #2311 the hint that recovered rows was the attacker's capability or precondition, not the bug class,
+    and on 9 rows the hunter named the mechanism and then dismissed it.
+  - The text is pure-meta (no protocol, contract, role or product). The step is prompt plus telemetry only: no
+    gate and no re-ask, so `RECHECK|` coverage is what tells "re-check done, did not help" from "not done".
+  - An honesty-gated `PRECOND-STEP|<subsystem>|<cls>|on` sentinel shows the step was injected. `ATTACKER_MODEL`
+    rides `exec.env_passthrough`, and `PRECOND|`, `PRECOND-STEP|` and `RECHECK|` are record boundaries in
+    `_join_wrapped_candidates`. Unset, or any value other than `1`, leaves the prompt byte-identical.
+  - New gate `demo-attacker-model.sh` (in `colony-lint`): source guards, mock-backend sentinel and byte-identity
+    probes, and a live ON/OFF mutation test over `flat-cyborg`.
+  - Recall is unmeasured. The default flips only if #2373's pre-registered dev and held-out rule says so.
+
 - **Live contest finder covers five platforms and reports every fetch (#2312).** `find-live-contests.sh`
   launches the new one-shot agent `auditor/agents/contest-finder.ag`, the scheduled discovery entry point.
   - Platforms: Immunefi boosted competitions and CodeHawks with the earlier host finder's rules, Sherlock with

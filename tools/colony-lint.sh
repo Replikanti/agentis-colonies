@@ -1784,6 +1784,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-operationalize-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory attacker-model step (#2373) ---
+# hunter.ag injects a PURE-META generation directive, gated ONLY by the opt-in `ATTACKER_MODEL=1` env (default OFF:
+# unset leaves the prompt byte-identical): one `PRECOND|<file:function>|caller=..|state=..|timing=..|config=..|input=..`
+# line per in-scope function before any mechanism, each CANDIDATE naming the field it exploits, and a
+# `RECHECK|<loc>|<no-loss|guard>|<fields>|<kept|reopened>` line per re-argued dismissal (telemetry, no gate), made
+# observable by an honesty-gated `PRECOND-STEP|<subsystem>|<cls>|on` sentinel. demo-attacker-model.sh source-guards
+# the four helpers, the marker/sentinel coupling, the polarity, the splice above the lens, the env_passthrough entry,
+# the three record boundaries (through the sliced _join_wrapped_candidates), token distinctness, the load-bearing
+# sentences, an overfitting denylist and substrate purity; with `agentis` it runs mock cells for the sentinel plus a
+# byte-identity probe, and with `flat-cyborg` the live ON/OFF mutation test (an [INCONCLUSIVE] re-check is not a fail).
+if [ -x "$REPO_ROOT/dark-factory/demo-attacker-model.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-attacker-model.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: attacker-model step (pure-meta text + default-OFF ATTACKER_MODEL + PRECOND-STEP sentinel + PRECOND/RECHECK contract) (#2373)"
+        printf '%s\n' "$check_out" | grep '\[INCONCLUSIVE\]' || true
+    else
+        fail "dark-factory: attacker-model step regressed (#2373)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory external-protocol resolver (#2235, PR A) ---
 # dark-factory/resolve-external.sh turns an EXTERNAL symbol (or a deployed address) into a re-openable
 # <path>:<line>, so a claim about another protocol can be CITED instead of remembered: vendored source under

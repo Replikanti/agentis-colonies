@@ -69,6 +69,10 @@ cb 300000;
 //               non-empty; otherwise "" and the prompt is byte-identical.
 //   PTRACE_REASK_IDS #2264 (optional, default ""): set by run-discovery.sh ONLY on a promise re-ask; it names the
 //               open promise items (unanswered numbers, demoted held answers, open leads). Empty => unchanged.
+//   ATTACKER_MODEL #2373 (optional, default unset = OFF): "1" opts IN to the pure-meta attacker-model step
+//               (attacker_model_directive): one PRECOND| line per in-scope function before any mechanism, and a
+//               RECHECK| line per re-argued no-loss/guard dismissal. Any other value (or unset) leaves the prompt
+//               byte-identical. Independent of every other knob; UNMEASURED until #2373's runs.
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 //         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|`, —
 //         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`,
@@ -112,6 +116,11 @@ cb 300000;
 //         followed in the model's own reply by one `PTRACE|#<k>|held|<path>:<line>[-<line>]|<check>` or
 //         `PTRACE|#<k>|broken|<file:function>|<call sequence>` line per accepted promise (model-emitted, free text).
 //         run-discovery.sh pairs them by id, re-opens every held citation, and gates / re-asks / promotes on it.
+//         #2373, only when ATTACKER_MODEL=1 opts in: `PRECOND-STEP|<subsystem>|<cls>|on`, followed in the model's own
+//         reply by one `PRECOND|<file:function>|caller=..|state=..|timing=..|config=..|input=..` line per in-scope
+//         function BEFORE any CANDIDATE| line, and one `RECHECK|<file:function[:line]>|<no-loss|guard>|<fields>|
+//         <kept|reopened>` line per re-argued dismissal before the terminal verdict (model-emitted, free text, never
+//         script-printed, never gated: telemetry only). A reopened lead is reported on its own CANDIDATE| line.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -563,6 +572,85 @@ fn trace_reask_block() -> string {
       + "numbering you used before, emit one TRACE line per listed number, and settle it against the code in "
       + "front of you or record it as UNRESOLVED. Do not renumber the checks, do not drop the ones you "
       + "already settled, and do not replace a listed check with a different one.\n\n";
+}
+
+// --- #2373 ATTACKER-MODEL DIRECTIVE (opt-in, default OFF) ----------------------------------------------------
+// The measured gap (#2311, corrected verdict): pointed at the right function, the hunter still did not produce
+// the mechanism. The hint that recovered rows was the attacker's CAPABILITY or PRECONDITION (L2: 7 of the 16 rows
+// L0 missed), not the bug class (L1: nothing beyond L0). And on 9 rows the hunter named the mechanism and then
+// dismissed it as no-loss or guarded. #2211/#2213 turned the CLASS into checks and measured NO-GO, so this step
+// turns the L2 signal into something the hunter derives itself: per function, who the attacker is and what they
+// control (PRECOND| lines), mechanisms only from that list, and a re-check of its own no-loss/guard dismissals
+// against it (RECHECK| lines).
+//
+// Shape: pure-meta prose, NO detector, NO output gate. The flag is the only gate, so OFF -> ON is one variable.
+// The re-check is enforced by nothing but the prompt (STOP 1 of #2373 chose prompt plus telemetry over a re-ask
+// gate); the RECHECK| lines make it observable, so a null result can be read as "re-check done, did not help"
+// or "re-check not done". The text names no protocol, contract, function, role or product, and it does not
+// lean on the severity rubric's closed ground list, so the knob changes one thing and cannot leak an answer.
+//
+// Default OFF, INVERTED against CALLEE_TRUST like OPERATIONALIZE_LENS and SEVERITY_RUBRIC: this is an UNMEASURED
+// recall change, and #2211/#2213 showed a generation directive can be net-negative. Unset (or any value other
+// than "1") => the directive is "" => the assembled prompt is BYTE-IDENTICAL to the pre-#2373 one. The default
+// flips only if #2373's pre-registered rule says so.
+//
+// Vocabulary: neither `PRECOND|` nor `RECHECK|` contains `CANDIDATE|`, and the block forbids writing it inside
+// either line, because lib/run-agent-validated.sh's hunter predicate greps `CANDIDATE|` UNANCHORED. Both lines
+// and the `PRECOND-STEP|` sentinel are record BOUNDARIES in run-discovery.sh's _join_wrapped_candidates.
+
+// The one string the block is RECOGNISED by: the block's literal FIRST LINE. The sentinel greps the ASSEMBLED
+// instruction for it, so a reword that drops the marker turns the sentinel OFF visibly and never lets a cell log
+// claim a frame that was not injected.
+fn attacker_model_marker() -> string {
+    return "=== DERIVE THE ATTACKER MODEL (per function, before mechanisms) ===";
+}
+
+// The directive: the per-function PRECOND| list, mechanisms grounded in it, and the RECHECK| re-check of the
+// cell's own no-loss/guard dismissals. Spliced directly above the lens, so the frame precedes the class it frames.
+fn attacker_model_block() -> string {
+    return attacker_model_marker() + "\n"
+      + "Before you propose ANY mechanism, write down WHO the attacker is and WHAT they control, separately for "
+      + "EACH in-scope function. One generic attacker for the whole payload is not enough: who can reach one "
+      + "function, and what they can steer there, is not the same for the next one.\n"
+      + "For EACH in-scope function, BEFORE any mechanism and before any CANDIDATE line, emit one line of its own:\n"
+      + "PRECOND|<file:function>|caller=<who can call it: permissionless, or which role>|state=<the state it reads "
+      + "that an attacker can preset or steer beforehand>|timing=<the ordering or moment the attacker picks: before "
+      + "or after which other call, inside one transaction or across several>|config=<any value a setter ADMITS, "
+      + "not only the value in use today>|input=<the external inputs the attacker supplies: arguments, values "
+      + "returned to it, amounts sent to it>\n"
+      + "Write `none` in a field only after you have looked for it in the code; an empty field is not an answer. "
+      + "Derive every field from THIS payload: never invent a caller, a setter or an input the code does not have, "
+      + "and a PRECOND line is never itself a finding.\n"
+      + "THEN generate mechanisms, from that list. Each CANDIDATE line names the PRECOND field its mechanism "
+      + "exploits, inside its exploit sentence (`via caller`, `via state`, `via timing`, `via config` or `via "
+      + "input`). A mechanism that exploits none of your fields is either a field you forgot to write down, so "
+      + "write it, or not a mechanism.\n"
+      + "RE-CHECK YOUR OWN DISMISSALS. A lead you set aside because nothing is lost (no-loss) or because a check "
+      + "in the code stops it (guard) must be re-argued against EACH PRECOND field of its function before it "
+      + "stands: does the loss stay zero, and does the check still hold, when the caller is the one you listed, "
+      + "the state is preset as you listed, the moment is the one the attacker picks, the configuration is any "
+      + "value the setter admits, and the input is the attacker's? For every such dismissal, emit one line of its "
+      + "own BEFORE your terminal verdict, with the same <file:function[:line]> you use for that lead anywhere "
+      + "else in your reply:\n"
+      + "RECHECK|<file:function[:line]>|<no-loss or guard>|<the PRECOND fields you re-argued it against>|<kept or reopened>\n"
+      + "`kept` means the dismissal survived every field. `reopened` means one field breaks it: the lead is then a "
+      + "finding, and it goes on its OWN CANDIDATE line, never inside the RECHECK line. A RECHECK line or a PRECOND "
+      + "line never contains the text CANDIDATE| — a finding is only ever written on a CANDIDATE line.\n\n";
+}
+
+// The opt-in. INVERTED like operationalize_enabled() (`== "1"`) ON PURPOSE: only the literal "1" opts in, so
+// unset / "" / "0" / any other value is OFF and is the DEFAULT. The knob rides run-discovery.sh's
+// exec.env_passthrough, else getenv() reads the SANITISED env and the step is silently inert (#1426).
+fn attacker_model_enabled() -> bool {
+    return getenv("ATTACKER_MODEL") == "1";
+}
+
+// The directive as it enters the prompt: "" unless the flag opts in. Concatenating "" is a no-op, so an OFF cell's
+// instruction matches the pre-#2373 one byte for byte, and the honesty-gated sentinel stays silent because an
+// empty directive carries no marker. O(1) top-level string concat: no regex, no reduce, no exec sh.
+fn attacker_model_directive() -> string {
+    if !attacker_model_enabled() { return ""; }
+    return attacker_model_block();
 }
 
 // --- #2145 ATTACKER-CONTROLLED-CALLEE DIRECTIVE (D1 of epic #2130) ------------------------------------------
@@ -1593,6 +1681,12 @@ let callee = callee_directive(code);
 // down, AFTER `instruction` exists, on the same honesty contract as CALLEE-TRUST| / APPENDIX-CONTEXT|.
 let opz = operationalize_directive();
 
+// #2373 ATTACKER-MODEL read: the per-function PRECOND| step and the RECHECK| re-check of the cell's own no-loss/guard
+// dismissals. `amodel` is "" unless ATTACKER_MODEL=1 (opt-in, default OFF), so every cell that does not opt in
+// prompts BYTE-IDENTICALLY to the pre-#2373 pipeline. No detector: the flag is the only gate. The sentinel it
+// enables is printed further down, AFTER `instruction` exists, on the same honesty contract as OPERATIONALIZE|.
+let amodel = attacker_model_directive();
+
 // #2235 EXTERNAL-RESOLVE read: the "you may go and read the external protocol" verb. `extres` is "" unless
 // run-discovery.sh --external-resolve handed this cell a resolver path, so every default cell prompts
 // BYTE-IDENTICALLY to the pre-#2235 pipeline. Gated on the env alone and NOT on the #2211 lens (STOP-1
@@ -1639,6 +1733,8 @@ let onchain = onchain_fact_directive();
 // other conditional block, because it re-frames the trust model the WHOLE hunt reasons under.
 // #2211: the (possibly empty) OPERATIONALIZE directive sits IMMEDIATELY ABOVE the lens, because it tells the
 // cell to convert "the bug class in the LENS below" into concrete checks — the referent has to follow it.
+// #2373: the (possibly empty) ATTACKER-MODEL directive sits between OPERATIONALIZE and the lens, so the frame the
+// mechanisms are generated under is read directly above the class it frames.
 let instruction =
     "You are an elite adversarial smart-contract auditor hunting a HIGH or MEDIUM severity bug an EXTERNAL "
   + "attacker (holding NO privileged role) can exploit. Audit this code FRESH: assume nothing is safe until "
@@ -1653,6 +1749,7 @@ let instruction =
   + appx
   + cons
   + opz
+  + amodel
   + "=== HUNT THIS BUG CLASS (the lens) ===\n" + classDoc + "\n\n"
   + "=== PROTOCOL BRIEF — invariants whose violation is a valid finding, and KNOWN ISSUES you MUST NOT report ===\n"
   + brief + "\n\n"
@@ -1741,6 +1838,15 @@ if index_of(instruction, callee_trust_marker()) >= 0 {
 // there is nothing else it could say — an OFF cell simply prints no line at all.
 if index_of(instruction, operationalize_marker()) >= 0 {
     print("OPERATIONALIZE|" + subsystem + "|" + cls + "|on");
+}
+
+// #2373: the PRECOND-STEP sentinel, on the same honesty contract — gated on the directive's own marker being
+// demonstrably IN the prompt about to be sent (index_of over `instruction`), never on attacker_model_enabled(), so
+// no cell log can claim a frame that was not injected. No `CANDIDATE|` substring (lib/run-agent-validated.sh's
+// predicate cannot false-accept a cell on it); a record BOUNDARY for _join_wrapped_candidates. `on` is a constant:
+// an OFF cell prints no line at all.
+if index_of(instruction, attacker_model_marker()) >= 0 {
+    print("PRECOND-STEP|" + subsystem + "|" + cls + "|on");
 }
 
 // #2245 iteration 2: the SEVERITY-RUBRIC sentinel, on the same honesty contract — gated on the rubric's own

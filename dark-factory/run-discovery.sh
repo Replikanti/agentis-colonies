@@ -980,7 +980,10 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # re-ask, and promise-lister.ag reads its listing through getenv("PROMISE_SOURCES") — unregistered, the whole pass
   # would be silently inert. All three are EMPTY on a default run (no lister is ever invoked), so the three names are
   # the knob's only unconditional delta here.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS,GROUND_EVIDENCE,PARAM_AUDIT,PARAM_REASK_ITEMS,FUNCTION_COVERAGE,COVERAGE_REASK_FNS,BREADTH_PROMISE_FILE,PTRACE_REASK_IDS,PROMISE_SOURCES"
+  # #2373 ATTACKER_MODEL rides it for the same #1426 reason: hunter.ag gates the attacker-model step on
+  # getenv("ATTACKER_MODEL"), which reads the SANITISED env — unregistered => "" => the opt-in would be silently inert.
+  # It is EMPTY on a default run, so registering it changes nothing there.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS,GROUND_EVIDENCE,PARAM_AUDIT,PARAM_REASK_ITEMS,FUNCTION_COVERAGE,COVERAGE_REASK_FNS,BREADTH_PROMISE_FILE,PTRACE_REASK_IDS,PROMISE_SOURCES,ATTACKER_MODEL"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
@@ -1096,6 +1099,7 @@ _json_id_array() {
 # or a `PARAM-AUDIT|` line or a model-emitted `PARAM|` / `PARAM-TRACE|` line (#2245 iteration 5)
 # or a `FUNCTION-COVERAGE|` / `COVERAGE-CELL|` line or a model-emitted `READ|` line (#2256)
 # or a `BREADTH-PROMISES|` line or a model-emitted `PTRACE|` line (#2264)
+# or a `PRECOND-STEP|` line or a model-emitted `PRECOND|` / `RECHECK|` line (#2373)
 # or a blank line closes the current record
 # without starting a new one
 # (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's own framing); any other line
@@ -1110,7 +1114,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*GROUND-EVIDENCE\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*PARAM-AUDIT\|/ || /^[[:space:]]*PARAM\|/ || /^[[:space:]]*PARAM-TRACE\|/ || /^[[:space:]]*FUNCTION-COVERAGE\|/ || /^[[:space:]]*COVERAGE-CELL\|/ || /^[[:space:]]*READ\|/ || /^[[:space:]]*BREADTH-PROMISES\|/ || /^[[:space:]]*PTRACE\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*GROUND-EVIDENCE\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*PARAM-AUDIT\|/ || /^[[:space:]]*PARAM\|/ || /^[[:space:]]*PARAM-TRACE\|/ || /^[[:space:]]*FUNCTION-COVERAGE\|/ || /^[[:space:]]*COVERAGE-CELL\|/ || /^[[:space:]]*READ\|/ || /^[[:space:]]*BREADTH-PROMISES\|/ || /^[[:space:]]*PTRACE\|/ || /^[[:space:]]*PRECOND\|/ || /^[[:space:]]*PRECOND-STEP\|/ || /^[[:space:]]*RECHECK\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
