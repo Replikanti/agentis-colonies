@@ -184,6 +184,12 @@
 #   DF_FORGE_HEARTBEAT_S Heartbeat interval of the prebuild and of the bounded gate, in seconds (default 60).
 #                        An operator cell cap (DEEP_HUNT_CELL_TIMEOUT_S) on a viaIR root must cover one cold
 #                        build for the first cell of that root (numa-audit: 1801.59 s).
+#
+# Env (#2374, the deep cell's compile scope):
+#   DF_CELL_SCOPE_AGENTIS  The agentis binary that runs auditor/agents/cell-scope.ag on the staged copy (default:
+#                        agentis on PATH; needs >= 1.32.0). Like EXAM_GUARD_AGENTIS it only locates a binary, it is
+#                        not a hunt knob. It is separate from --agentis, so a stubbed prover still gets a real scope
+#                        agent; no binary, or a refusal, exits 3 before any forge call.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -550,11 +556,11 @@ slim_sol_source() {  # $1 = src .sol path, $2 = dest staged path
 }
 
 # Stage a fresh copy of the foundry project into the rundir so the sandboxed exec sh can write the test into
-# its test/ dir and run forge there (it cannot reach a $HOME-rooted --repo). Drop any pre-existing *.t.sol so
-# the generated test is the ONLY one the fuzzer scopes to.
+# its test/ dir and run forge there (it cannot reach a $HOME-rooted --repo). The pre-existing Foundry tests are
+# dropped from the copy by cell_scope() below (#2374), after the mock staging, so the generated test is the ONLY
+# one the fuzzer scopes to.
 REPO_IN_RUN="$RUN/repo"
 cp -R "$REPO" "$REPO_IN_RUN"
-rm -f "$REPO_IN_RUN/test/"*.t.sol 2>/dev/null || true
 mkdir -p "$REPO_IN_RUN/test"
 
 # #1794 — STAGE THE SHARED HARNESS-MOCK LIBRARY into the harness project, BEFORE the prover writes/compiles the
@@ -578,6 +584,55 @@ if [ -d "$HARNESS_MOCKS_SRC" ]; then
   done
 fi
 
+# #2374 — THE DEEP CELL'S COMPILE SCOPE. auditor/agents/cell-scope.ag (a one-shot agent) owns the one rule for
+# what the staged copy must not inherit: it removes every *.t.sol outside the dependency dirs (./lib/,
+# ./dependencies/, node_modules/, .git/), wherever the project keeps its tests (numa: contracts/Test/, Fraxlend:
+# src/test/), proves that none is left, and writes the prebuild's skip list (every *.sol left under test/, the
+# gate's #1069 set). Before #2374 this script removed only the top level of test/, so one stray PoC elsewhere broke
+# the viaIR prebuild of every cell of an arm. This shim only starts the runtime, which cannot run inside itself: a
+# throwaway workspace, its config (mock backend, the one env var the agent reads, no stdout cap), one `agentis go`,
+# then it moves the agent's two lists into $RUN. The binary is DF_CELL_SCOPE_AGENTIS (default: agentis on PATH),
+# separate from --agentis (the prover's binary, a stub in many self-tests): the rule has no shell copy, so every
+# deep cell needs a real agentis. Any failure exits 3 before any forge call: the cell has no verdict.
+CELL_SCOPE_AG="$HERE/auditor/agents/cell-scope.ag"
+cell_scope() {  # $1 = the staged repo
+  local bin ws rc counts
+  bin="${DF_CELL_SCOPE_AGENTIS:-$(command -v agentis 2>/dev/null || true)}"
+  if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+    echo "run-invariant-hunt.sh: [cell-scope] no agentis binary for the deep cell's scope agent (DF_CELL_SCOPE_AGENTIS='${DF_CELL_SCOPE_AGENTIS:-}', or agentis >= 1.32.0 on PATH)" >&2
+    exit 3
+  fi
+  [ -f "$CELL_SCOPE_AG" ] || { echo "run-invariant-hunt.sh: [cell-scope] $CELL_SCOPE_AG missing" >&2; exit 3; }
+  ws="$(mktemp -d "${TMPDIR:-/tmp}/cell-scope.XXXXXX")" || { echo "run-invariant-hunt.sh: [cell-scope] cannot create a workspace" >&2; exit 3; }
+  if ! (cd "$ws" && "$bin" init) > /dev/null 2>&1 || [ ! -d "$ws/.agentis/sandbox" ]; then
+    echo "run-invariant-hunt.sh: [cell-scope] agentis init failed ($bin)" >&2; rm -rf "$ws"; exit 3
+  fi
+  {
+    echo "llm.backend = mock"
+    echo "exec.sandbox_profile = basic"
+    echo "exec.env_passthrough = CELL_SCOPE_REPO"
+    echo "exec.stdout_max_bytes = 0"
+  } >> "$ws/.agentis/config"
+  cp "$CELL_SCOPE_AG" "$ws/cell-scope.ag" || { rm -rf "$ws"; exit 3; }
+  rc=0
+  (cd "$ws" && exec env CELL_SCOPE_REPO="$1" "$bin" go cell-scope.ag --enable-exec) > "$ws/go.log" 2>&1 || rc=$?   # no-pii: cell-scope.ag makes no prompt() call
+  counts="$(sed -n 's/^CELL-SCOPE|dropped=\([0-9][0-9]*\)|skip=\([0-9][0-9]*\)$/dropped \1, prebuild skip \2/p' "$ws/go.log" | tail -1)"
+  if [ "$rc" != 0 ] || [ -z "$counts" ] || [ ! -f "$ws/.agentis/sandbox/dropped-tests.lst" ] \
+     || [ ! -f "$ws/.agentis/sandbox/prebuild-skip.lst" ]; then
+    echo "run-invariant-hunt.sh: [cell-scope] the scope agent refused or failed (rc=$rc, $bin) — no prebuild, no verdict:" >&2
+    sed 's/^/  /' "$ws/go.log" >&2
+    rm -rf "$ws"; exit 3
+  fi
+  rm -f "$RUN/dropped-tests.lst" "$RUN/prebuild-skip.lst"
+  if ! mv "$ws/.agentis/sandbox/dropped-tests.lst" "$RUN/dropped-tests.lst" \
+     || ! mv "$ws/.agentis/sandbox/prebuild-skip.lst" "$RUN/prebuild-skip.lst"; then
+    echo "run-invariant-hunt.sh: [cell-scope] cannot move the scope lists into $RUN" >&2; rm -rf "$ws"; exit 3
+  fi
+  rm -rf "$ws"
+  echo "run-invariant-hunt.sh: [cell-scope] $counts" >&2
+}
+cell_scope "$REPO_IN_RUN"
+
 # #2353 — VIAIR PREBUILD + GATE BUDGET. The agentis exec bound for every prover exec stays INV_EXEC_DEFAULT_MS.
 # On a viaIR target (as `forge config --json` reports it) evm-harness/forge-prebuild.sh builds this staged repo
 # once per source project, shares the warm compiler cache with every later cell through DF_FORGE_WARM_DIR, and
@@ -590,7 +645,7 @@ PREBUILD_FACTS=""
 if [ -f "$PREBUILD_SH" ]; then
   PREBUILD_FACTS="$(bash "$PREBUILD_SH" --repo "$REPO_IN_RUN" --source-repo "$REPO" \
     --warm-dir "${DF_FORGE_WARM_DIR:-$OUT/.forge-warm}" --heartbeat "$RUN/.prebuild-heartbeat" \
-    --log "$RUN/prebuild.log" || true)"
+    --log "$RUN/prebuild.log" --skip-list "$RUN/prebuild-skip.lst" || true)"
 fi
 _pb_fact() {  # $1 = fact name -> its whole-number value, 0 when absent or malformed
   _pbv="$(printf '%s\n' "$PREBUILD_FACTS" | sed -n "s/^$1=\([0-9][0-9]*\)\$/\1/p" | tail -1)"

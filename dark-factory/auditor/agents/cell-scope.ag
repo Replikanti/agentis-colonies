@@ -1,0 +1,172 @@
+cb 5500;
+// cell-scope.ag — the deep invariant cell's compile scope (#2374). run-invariant-hunt.sh copies the project into a
+// per-cell run dir; this agent owns the one rule for which files that copy must not inherit, and from it derives
+// the viaIR prebuild's skip list, so the copy and the prebuild cannot disagree.
+//
+// One-shot (`agentis go`, launched by run-invariant-hunt.sh cell_scope() after the copy and the #1794 mock staging,
+// before the #2353 prebuild), deterministic: no prompt, no emit, no learn, no memo. The rule, the walks, the
+// fail-closed checks and the counts live here; the launcher only starts the runtime and moves the two lists into
+// the run dir. The filesystem work runs through `exec argv` shims: find (the walks), xargs + rm (the drop). Every
+// shim is a constant POSIX `sh -c` trampoline (enter the dir in $1, exec the rest), so every variable part is a
+// positional argument; no `env -C`, no `find -printf`, so the deep path stays portable to BSD tools.
+//
+// Input (env, allowlisted by the launcher's exec.env_passthrough):
+//   CELL_SCOPE_REPO   the staged repo (absolute path of a Foundry project; anything else is refused)
+// Output (workspace files, NUL-separated, moved to $RUN by the launcher only on exit 0):
+//   dropped-tests.lst the removed files, `./`-relative, in find order
+//   prebuild-skip.lst the prebuild's --skip values, `test/...`, in find order
+// Stdout: `CELL-SCOPE|dropped=<n>|skip=<m>`. Any refusal throws (exit 1); the launcher maps it to exit 3.
+//
+// THE RULE
+//   Drop set D: every non-directory entry whose name ends in the literal `.t.sol` (regular files, symlinks,
+//   dangling links), anywhere in the copy, except under
+//     - ./lib/ and ./dependencies/ at the root only: Foundry `libs` paths are root-relative, and a nested lib/
+//       can hold project tests (one hunted tree keeps its own under test/hook/lib/);
+//     - node_modules/ and .git/ at any depth: they never hold project source.
+//   Symlinked dirs are never followed (find's default -P); removing a symlink never touches its target.
+//   Forge's own `test` alias is the literal, case-sensitive `.t.sol` suffix, so look-alikes (`X.T.SOL`, a
+//   fullwidth `t`, a one-dot leader for the dot) are kept, and so is a directory named like a test (forge's
+//   `out/X.t.sol/` artifact dirs).
+//   Skip set S: every regular `*.sol` left under test/ after the drop (test-tree helpers + the staged mocks).
+//   That is the #1069 isolation set forge-invariant.sh and forge-poc.sh apply at gate time, so the prebuild and
+//   the gate keep one compile scope. S is not widened to helpers under, say, src/test/: the gate would then
+//   compile cold what the prebuild skipped, the expensive direction under viaIR.
+//
+// WHY THIS RULE (evidence from #2374's plan, checked on hunted trees and the #2311 / #2372 archives):
+//   - Before #2374 the copy dropped only top-level test/*.t.sol. A PoC an earlier arm left in numa-audit under
+//     contracts/Test/ (numa sets src = 'contracts') did not compile, broke the viaIR prebuild (prebuild_rc=1) and
+//     sent every numa deep cell to HARNESS_ERROR. A Fraxlend-based tree (test = 'src/test') holds two stray PoCs.
+//   - Strays are tests, never helpers: every stray source file in the #2372 evidence trees is a *.t.sol. Helpers
+//     must stay: numa's contracts/deployment/vaultV2Deployer.sol imports ../Test/mocks/VaultMockOracle.sol. So the
+//     rule removes *.t.sol and nothing else.
+//   - Survey of 228 Foundry roots: 1782 *.t.sol outside dependency dirs, 1355 under test/ (only 237 at its top
+//     level) and 427 outside it; every explicit `libs` entry is lib, node_modules or dependencies. 229 archived
+//     generated harnesses import 0 *.t.sol, so removing nested test/ tests cannot break a harness import.
+//   - lib/inheritance.py already excludes *.t.sol from the reach inventory and the promise sources, so the drop
+//     changes no prompt input.
+//
+// KNOWN LIMITS
+//   - A kept file inside the compile scope that imports a removed *.t.sol would break the prebuild. Closed by a
+//     survey, not by code: across the 228 roots, 13 non-test .sol files import a *.t.sol, and all 13 sit under a
+//     skipped test/ tree or outside the configured `src`, so none is compiled; the 7 import lines of the 229
+//     archived harnesses that reach a project test helper reach no *.t.sol, directly or through those 13 files.
+//   - A symlinked dir pointing outside the copy is not followed, so a *.t.sol behind it stays and forge may still
+//     compile it. None of the 24 symlinks in the surveyed hunted roots is such a link.
+//   - A name that is not valid UTF-8 (in a *.t.sol, or a *.sol under test/) is refused, not handled: agentis
+//     delivers undecodable exec output as an empty string, which the sentinel check below turns into a refusal.
+//
+// Runtime behaviour this agent relies on (agentis >= 1.32.0; each pinned by tools/test-deep-cell-scope.sh):
+//   - exec output that is not valid UTF-8 arrives empty: every walk starts with a sentinel record (the start
+//     point itself), so an empty walk is an error, never "no entries";
+//   - exec output loses trailing whitespace, not a trailing NUL: every record ends in NUL, so none is cut;
+//   - a non-zero exit of an exec throws; `throw` exits 1.
+//
+// COST (measured on agentis v1.32.0: CB = introspect.cb_spent at the end of a run, appended to a sweep copy;
+// wall = `agentis go` alone, median of 3, each run on a fresh copy; entries = non-directory entries, with the
+// staged mocks):
+//   tree                                          entries  dropped  skip   CB   wall
+//   F3 flat test/ (tools/test-deep-cell-scope.sh)      10        2     6  546  284 ms
+//   F1 numa-shaped                                     16        2     4  546  283 ms
+//   generated: 1400 .sol + 600 .t.sol in 40 dirs     2005      600     4  546  279 ms
+//   (the largest hunted root has 568 .sol outside dependency dirs). The cost is flat in tree size: a fixed number
+//   of exec calls and whole-string builtins, no per-element lambda. `cb` = 10x the largest measurement (5460),
+//   rounded up; the cap is not a reservation, and a tight one would turn a runtime CB-table change into refused
+//   cells. `agentis init` of the launcher's workspace adds about 90 ms per cell.
+//
+// Every shim call runs under the cell's existing per-exec bound (INV_EXEC_DEFAULT_MS = 600000 in
+// run-invariant-hunt.sh). The walks take milliseconds, so only a hung filesystem can reach it, and the cell's
+// worst case stays the same.
+
+fn exec_bound_ms() -> int { return 600000; }
+
+// ---------------------------------------------------------------------------------------------------------
+// shims (exec argv; constant trampolines, every variable part a positional argument)
+// ---------------------------------------------------------------------------------------------------------
+// sh -c <in_dir> cell-scope <dir> <cmd...>: enter <dir>, exec <cmd...>
+fn in_dir() -> string { return "cd -- \"$1\" || exit 97; shift; exec \"$@\""; }
+// sh -c <fed_from> cell-scope <list> <dir> <cmd...>: stdin from <list> (opened before the cd, so a workspace-
+// relative name works), enter <dir>, exec <cmd...>
+fn fed_from() -> string { return "exec 0< \"$1\" || exit 97; cd -- \"$2\" || exit 97; shift 2; exec \"$@\""; }
+fn one_line(s: string) -> string { return trim(get(regex_split("\n", trim(s)), 0)); }
+
+// ---------------------------------------------------------------------------------------------------------
+// the rule constants
+// ---------------------------------------------------------------------------------------------------------
+fn test_glob() -> string { return "*.t.sol"; }
+fn sol_glob() -> string { return "*.sol"; }
+fn root_dep_dir(i: int) -> string { return get(["./lib", "./dependencies"], i); }
+fn any_dep_dir(i: int) -> string { return get(["node_modules", ".git"], i); }
+fn test_dir() -> string { return "test"; }
+
+// The drop walk D, from the root of the copy. Byte-wise globbing (LC_ALL=C), so a name that is not valid UTF-8
+// still matches and reaches the sentinel check instead of being skipped silently. Sentinel record: `.`.
+fn drop_walk(repo: string) -> string {
+    return try {
+        exec argv timeout 600000 ["sh", "-c", in_dir(), "cell-scope", repo, "env", "LC_ALL=C", "find", ".",
+            "(", "-path", root_dep_dir(0), "-o", "-path", root_dep_dir(1), "-o", "-name", any_dep_dir(0), "-o", "-name", any_dep_dir(1), ")", "-prune",
+            "-o", "(", "-path", ".", "-o", "(", "!", "-type", "d", "-name", test_glob(), ")", ")", "-print0"];
+    } catch e { throw("cell-scope: cannot walk " + repo + ": " + one_line(e.message)); };
+}
+// The skip walk S, from test/ (run-invariant-hunt.sh has created it). Sentinel record: `test`.
+fn skip_walk(repo: string) -> string {
+    return try {
+        exec argv timeout 600000 ["sh", "-c", in_dir(), "cell-scope", repo, "env", "LC_ALL=C", "find", test_dir(),
+            "(", "-path", test_dir(), "-o", "(", "-type", "f", "-name", sol_glob(), ")", ")", "-print0"];
+    } catch e { throw("cell-scope: cannot walk " + repo + "/" + test_dir() + ": " + one_line(e.message)); };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// records (whole-string builtins only)
+// ---------------------------------------------------------------------------------------------------------
+// A walk's raw -print0 output -> the records after its sentinel, each still NUL-terminated ("" = none). The
+// sentinel is the walk's start point, which find always prints first. Output that does not start with it is
+// undecodable (agentis delivers non-UTF-8 exec output as "") or failed, output that does not end in NUL is cut;
+// both are refused (fail closed) by this one check.
+fn records(raw: string, sentinel_rx: string, sentinel_len: int, what: string) -> string {
+    if !regex_match("(?s)^" + sentinel_rx + "\\x00(?:.*\\x00)?$", raw) {
+        throw("cell-scope: the " + what + " did not return its sentinel record followed by whole records (" + to_string(len(raw)) + " chars): an entry name that is not valid UTF-8, or a failed or cut walk — refusing (fail closed)");
+    }
+    return substring(raw, sentinel_len + 1, len(raw));
+}
+fn count(recs: string) -> int { return len(regex_find_all("\\x00", recs)); }
+// NUL-separated records -> a readable one-line listing (for a refusal message)
+fn listing(recs: string) -> string { return trim(join_with(regex_split("\\x00", recs), " | ")); }
+fn join_with(xs: list, sep: string) -> string {
+    if len(xs) == 0 { return ""; }
+    let j = reduce(xs, |acc: string, x: string| -> string { return acc + sep + x; }, "");
+    return substring(j, len(sep), len(j));
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------------------------------------
+let repo = getenv("CELL_SCOPE_REPO");
+if !regex_match("^/.", repo) {
+    throw("cell-scope: CELL_SCOPE_REPO must be an absolute path below / (got '" + repo + "')");
+}
+try { exec argv ["test", "-f", repo + "/foundry.toml"]; } catch e {
+    throw("cell-scope: " + repo + " is not a Foundry project (no foundry.toml) — refusing to prune it");
+};
+
+// (1) D
+let D = records(drop_walk(repo), "\\.", 1, "drop walk of " + repo);
+let nd = count(D);
+// (2) the list, then the drop (xargs: no ARG_MAX limit; every record starts with ./, so none reads as a flag)
+file_write("dropped-tests.lst", D);
+let rm_err = if nd == 0 { ""; } else {
+    try {
+        exec argv timeout 600000 ["sh", "-c", fed_from(), "cell-scope", "dropped-tests.lst", repo, "xargs", "-0", "rm", "-f", "--"];
+        "";
+    } catch e { one_line(e.message); };
+};
+// (3) the proof: the drop walk again must return its sentinel alone
+let left = records(drop_walk(repo), "\\.", 1, "verify walk of " + repo);
+if left != "" {
+    let why = if rm_err != "" { " (rm: " + rm_err + ")"; } else { ""; };
+    throw("cell-scope: " + to_string(count(left)) + " test file(s) are still in " + repo + " after the drop" + why + " — refusing (fail closed): " + listing(left));
+}
+// (4) S
+let S = records(skip_walk(repo), test_dir(), len(test_dir()), "skip walk of " + repo + "/" + test_dir());
+file_write("prebuild-skip.lst", S);
+// (5)
+print("CELL-SCOPE|dropped=" + to_string(nd) + "|skip=" + to_string(count(S)));

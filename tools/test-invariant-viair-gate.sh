@@ -145,11 +145,18 @@ mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 
 fact() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | tail -1; }
 # stage <name> [template]: a fresh copy of the template project (the per-cell staged repo).
 stage() { rm -rf "${WORK:?}/$1"; cp -R "${2:-$SRC}" "$WORK/$1"; }
+# skip_list <repo>: the #2374 --skip-list built from the pre-#2374 enumeration (every *.sol under test/, find
+# order), so the assertions below keep pinning the same skip arguments. Prints the list's path.
+skip_list() {
+    : > "$1.skip"
+    [ -d "$1/test" ] && ( cd "$1" && find test -type f -name '*.sol' -print0 ) > "$1.skip"
+    printf '%s' "$1.skip"
+}
 # prebuild <repo> <warm-dir> [extra shim args...]: run the shim with the stub forge, stdout = facts.
 prebuild() {
     _pr_repo="$1"; _pr_warm="$2"; shift 2
     PATH="$STUBPATH" bash "$SHIM" --repo "$_pr_repo" --source-repo "$SRC" --warm-dir "$_pr_warm" \
-        --heartbeat "$_pr_repo.hb" --log "$_pr_repo.log" "$@"
+        --heartbeat "$_pr_repo.hb" --log "$_pr_repo.log" --skip-list "$(skip_list "$_pr_repo")" "$@"
 }
 
 # ==========================================================================================================
@@ -188,7 +195,8 @@ else
     mkdir -p "$WORK/emptybin"
     if [ -z "$(PATH="$WORK/emptybin:/usr/bin:/bin" command -v forge 2>/dev/null)" ]; then
         out="$(PATH="$WORK/emptybin:/usr/bin:/bin" bash "$SHIM" --repo "$WORK/a3" --source-repo "$SRC" \
-            --warm-dir "$WORK/warm-a3" --heartbeat "$WORK/a3.hb" --log "$WORK/a3.log" 2>"$WORK/a3.err")"
+            --warm-dir "$WORK/warm-a3" --heartbeat "$WORK/a3.hb" --log "$WORK/a3.log" \
+            --skip-list "$(skip_list "$WORK/a3")" 2>"$WORK/a3.err")"
         { [ "$out" = "via_ir=0" ] && [ -s "$WORK/a3.err" ]; } || c_fail="$c_fail no-forge($out)"
     fi
     [ ! -e "$WORK/warm-a3" ] || c_fail="$c_fail warm-dir-created"
@@ -312,7 +320,7 @@ else
         stage hbk/repo
         DF_FORGE_HEARTBEAT_S=1 STUB_VIA_IR=true STUB_BUILD_S=30 PATH="$STUBPATH" bash "$SHIM" \
             --repo "$WORK/hbk/repo" --source-repo "$SRC" --warm-dir "$WORK/hbk/warm" \
-            --heartbeat "$WORK/hbk/hb" --log "$WORK/hbk/log" >/dev/null 2>&1 &
+            --heartbeat "$WORK/hbk/hb" --log "$WORK/hbk/log" --skip-list "$(skip_list "$WORK/hbk/repo")" >/dev/null 2>&1 &
         _sp=$!
         for _i in $(seq 1 50); do [ -n "$(procs_under "$STUB_SLEEP 30")" ] && break; "$STUB_SLEEP" 0.1; done
         kill -KILL "$_sp" 2>/dev/null
@@ -368,7 +376,7 @@ else
     ln -s "$SRC" "$WORK/src-link"
     stage a13
     out="$(STUB_VIA_IR=true PATH="$STUBPATH" bash "$SHIM" --repo "$WORK/a13" --source-repo "$WORK/src-link" \
-        --warm-dir "$W4" --heartbeat "$WORK/a13.hb" --log "$WORK/a13.log" 2>/dev/null)"
+        --warm-dir "$W4" --heartbeat "$WORK/a13.hb" --log "$WORK/a13.log" --skip-list "$(skip_list "$WORK/a13")" 2>/dev/null)"
     n_keys="$(find "$W4" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
     if [ "$(fact "$out" warm_hit)" = 1 ] && [ "$n_keys" = 1 ]; then
         pass "prebuild_key_symlink_stable: a symlinked --source-repo maps to the same warm key"
@@ -384,6 +392,28 @@ else
         pass "prebuild_no_test_dir: no test/ dir => empty skip set, clean build"
     else
         fail "prebuild_no_test_dir" "out='$(printf '%s' "$out" | tr '\n' ' ')' err=$(head -3 "$WORK/a14.err" | tr '\n' ';')"
+    fi
+
+    # --- prebuild_requires_skip_list (#2374) ------------------------------------------------------------------
+    # The skip set comes only from cell-scope.ag's list: no list, an empty value or an unreadable path is a no-op
+    # with a note, never a build with a scope the shim guessed.
+    r_fail=""
+    for _sl in none "" "$WORK/no-such.lst"; do
+        stage a15; : > "$STUB_LOG"
+        if [ "$_sl" = none ]; then
+            out="$(STUB_VIA_IR=true PATH="$STUBPATH" bash "$SHIM" --repo "$WORK/a15" --source-repo "$SRC" \
+                --warm-dir "$WORK/warm-a15" --heartbeat "$WORK/a15.hb" --log "$WORK/a15.log" 2>"$WORK/a15.err")"
+        else
+            out="$(STUB_VIA_IR=true PATH="$STUBPATH" bash "$SHIM" --repo "$WORK/a15" --source-repo "$SRC" \
+                --warm-dir "$WORK/warm-a15" --heartbeat "$WORK/a15.hb" --log "$WORK/a15.log" --skip-list "$_sl" 2>"$WORK/a15.err")"
+        fi
+        { [ "$out" = "via_ir=0" ] && grep -q 'skip-list' "$WORK/a15.err" && ! grep -q '^build|' "$STUB_LOG" \
+          && [ ! -e "$WORK/warm-a15" ]; } || r_fail="$r_fail [$_sl] out='$out'"
+    done
+    if [ -z "$r_fail" ]; then
+        pass "prebuild_requires_skip_list: no / empty / missing --skip-list => via_ir=0 + a note, no build"
+    else
+        fail "prebuild_requires_skip_list" "$r_fail"
     fi
 fi
 

@@ -240,8 +240,14 @@ dark-factory/run-invariant-hunt.sh \
 ```
 
 `run-invariant-hunt.sh` stages a fresh copy of `--repo` into its rundir (so the sandboxed `exec sh` can write
-the test into `test/` and run forge there), drops any pre-existing `*.t.sol` so the gate scopes to exactly the
-generated test, and routes the target through the substrate (`prompt`/`emit`/`learn`). The verdict + any
+the test into `test/` and run forge there), drops every pre-existing Foundry test from it so the gate scopes to
+exactly the generated test, and routes the target through the substrate (`prompt`/`emit`/`learn`). The drop is
+owned by the one-shot agent `auditor/agents/cell-scope.ag` (#2374): it removes every `*.t.sol` outside `./lib/`,
+`./dependencies/`, `node_modules/` and `.git/`, wherever the project keeps its tests (`contracts/Test/`,
+`src/test/`, nested `test/**`), proves none is left, and writes `$RUN/prebuild-skip.lst` (every `*.sol` left under
+`test/`, the gate's #1069 set), which the viaIR prebuild turns into its `--skip` arguments. It runs through
+`DF_CELL_SCOPE_AGENTIS` (default: agentis on PATH, >= 1.32.0), not `--agentis`; no binary or a refusal ends the
+cell with exit 3 before any forge call. The verdict + any
 shrunk exploit sequence land at `<out>/invariant-report.md`. `--seed` pins forge's fuzz seed so the search is
 reproducible.
 
