@@ -194,10 +194,12 @@ else
 fi
 
 note "4) the splice position: the directive sits IMMEDIATELY ABOVE the lens it refers to ..."
+# #2373: the (default-OFF) attacker-model frame `+ amodel` may sit between `+ opz` and the lens header, because it
+# frames the same class; nothing else may (demo-attacker-model.sh pins its own position).
 if grep -q '^  + opz$' "$HUNTER" \
    && grep -B1 '^  + opz$' "$HUNTER" | grep -q '^  + cons$' \
-   && grep -A1 '^  + opz$' "$HUNTER" | grep -q 'HUNT THIS BUG CLASS (the lens)'; then
-  ok "'+ opz' is spliced between '+ cons' and the lens header (the directive's \"the LENS below\" referent follows it)"
+   && grep -A2 '^  + opz$' "$HUNTER" | sed -n '2,3p' | grep -v '^  + amodel$' | head -1 | grep -q 'HUNT THIS BUG CLASS (the lens)'; then
+  ok "'+ opz' is spliced between '+ cons' and the lens header, with at most the #2373 '+ amodel' frame between (the directive's \"the LENS below\" referent follows it)"
 else
   bad "the '+ opz' splice is gone or no longer sits between '+ cons' and the '=== HUNT THIS BUG CLASS' header"
 fi
