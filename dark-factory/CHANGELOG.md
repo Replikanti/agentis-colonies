@@ -16,6 +16,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Exam arms no longer share the base code tree (#2372).** `exam.sh stage` symlinked every arm's
+  `<contest>/code` to the frozen base, so whatever one arm wrote into the tree (PoC tests, forge build output with the
+  ABI of PoCs long gone, a git stash) was visible to every later arm on that base, and a stray PoC broke a later
+  arm's viaIR prebuild. Every arm now hunts a private copy (`cp -a --reflink=auto`, a reflink on btrfs), and one
+  guard checks each tree against a per-base content seal at five points (base before stage, copy after the copy,
+  copy before the hunt, base after the hunt, copy after the hunt as `repo-delta.tsv` evidence).
+  - New one-shot agent `bench/corpus-bench/exam/exam-guard.ag` holds all the logic (fail-closed seal accept rules,
+    the compare as flat set operations over percent-encoded records, drift classes, listing, refuse / VOID); it
+    reaches the filesystem only through `exec argv` shims (find, sha256sum, git, cp/mv/rm, stat, realpath, pwd).
+  - New `exam.sh seal --base --contest [--accept <rel>]... [--no-git] [--force]` and `exam.sh guard --base
+    --contest [--list]`; `freeze` and `adopt` end with a seal (`--accept` / `--no-git` pass through).
+  - `stage` refuses a drifted, unsealed or tampered base and a live arm on a tmpfs exam root; `run` refuses a copy
+    that drifted after stage and an arm staged before #2372; a base that changed during an arm VOIDs it (class
+    `operator`, reason `exam-guard base-drift`), and so does a post-run guard that cannot decide.
+  - `run.meta` gains `code_copy`, `code_manifest_sha256`, `base_guard_after`, `repo_delta`, `guard_cb_spent`;
+    `code=` now names the arm's copy. `drive`'s snapshot carries `exam-guard.ag`.
+  - CI installs the latest agentis release (sha256-checked, outside PATH, as `EXAM_GUARD_AGENTIS`) so the exam
+    self-test runs the real guard; on CI a missing binary fails the self-test instead of skipping it.
+  - The exam self-test now actually runs on CI. The ubuntu-26.04 runner ships uutils coreutils, so
+    `demo-holdout-exam.sh` skipped `exam.sh self-test` (no GNU `timeout`) and the check passed in about 1 s, on
+    main too. `ci.yml` switches the runner to GNU coreutils before colony-lint, and on CI every missing
+    prerequisite of the exam self-test (python3, git, GNU timeout, /proc, the guard binary) is a FAIL, never a SKIP.
+  - The launcher honours no seam that could swap or weaken the guard (no env var for the agent file, its CB or its
+    stdout cap); the self-test reaches those failure modes, and the walk-vs-content count cross-check, on a
+    patched copy of `exam.sh` + `exam-guard.ag` in its own work dir.
+  - Only `freeze`, `adopt` and `seal` write into a base. A base refusal (`stage`, `exam.sh guard`) prints the first
+    100 listed paths and the `exam.sh guard --base <b> --contest <c> --list` command for all of them.
+  - Needs agentis >= 1.32.0 for the guard (`EXAM_GUARD_AGENTIS`, else `agentis` on PATH).
+
 - **Deep invariant gate on viaIR targets (#2353).** On a Foundry project with viaIR enabled every deep cell ended
   `HARNESS_ERROR`: the prover's forge gate ran under the fixed `exec.default_timeout_ms = 600000` while one cold
   viaIR build of the staged repo took 1801.59 s on numa-audit, and every cell paid that cold build again.

@@ -685,7 +685,8 @@ host-specific is data — the frozen base's `freeze.meta`, a profile file, and a
 repo. All roots are arguments. It only invokes the pipeline (`map-zones.sh`, `gen-briefs.sh`,
 `lib/zone-coverage.py`, `run-zone-hunt.sh`) from the tool checkout it is given, and `triage.py` from this tree.
 Needs bash, python3, git, GNU `timeout`, `setsid` and `/proc` (Linux), plus `bwrap` for a live backend (the hunt
-sessions must run sandboxed); exits 3 when one is missing.
+sessions must run sandboxed), and since #2372 an agentis >= 1.32.0 binary for the code-tree guard
+(`EXAM_GUARD_AGENTIS`, else `agentis` on PATH); exits 3 when one is missing.
 
 End to end (every `<...>` is the operator's):
 
@@ -696,6 +697,7 @@ $X/run-corpus-bench.sh --fetch --gt --id <id> --work <base>
 # 2. freeze map + briefs ONCE, from a pinned CLEAN tool checkout (never the live dev tree)
 $X/exam/exam.sh freeze --base <base> --contest <id> --checkout <tool-checkout> --profile control \
     --code-subdir <project dir under code/>            # or --project-roots <r1,r2|auto> for a multi-project clone
+#    ... and seals code/ (#2372): name every setup difference from the git HEAD with --accept <rel> (see below)
 # 3. a plan: one row per frozen zone (or --zones a,b / --whole for one whole-contest `_all` row); review it
 $X/exam/exam.sh plan --base <base> --contest <id> --arm exam --repeat 1 --profile exam \
     --checkout <tool-checkout> > <plans>/exam-r1.tsv
@@ -720,7 +722,91 @@ finding-id token (the colony-lint #2231 rules, via `fresh-set.py`'s `prompt_visi
 ` GT `, `judging`, audit-platform names and every `--deny-pattern` (exit 4; pass the contest's own name here),
 and writes `freeze.sha256` (every map/brief file) + `freeze.meta` (`checkout_commit model backend code_dir_rel
 project_roots map_roots profile frozen_utc`). A frozen base is never written again: a second freeze needs
-`--force`, and `stage` refuses a base whose files drifted from `freeze.sha256`.
+`--force`, and `stage` refuses a base whose files drifted from `freeze.sha256`. Since #2372 `freeze` and `adopt` end
+by sealing the base's code tree (below).
+
+**Repo isolation: seal and guard (#2372).** Every arm hunts its OWN copy of the code tree. Before #2372 `stage`
+symlinked `<arm>/<contest>/code` to the base, so a PoC test, forge build output or a git stash one arm left in the
+tree was visible to every later arm on that base (and one stray PoC broke a later arm's viaIR prebuild). Now:
+
+- `stage` copies the base's `code/` into the arm (`cp -a --reflink=auto`: on btrfs a reflink, about 2 s and 0 B
+  of exclusive data for a 600-750 MB tree; elsewhere a full copy, recorded as `stage.meta` `code_copy=full`). The
+  copy stays in the arm dir as evidence; prune it by hand (`rm -rf <arm>/<contest>/code`), `repo-delta.tsv` remains.
+- A **seal** per base (`code.manifest` + `code.seal` + `code.setup.txt` next to `code/`, never inside it) records
+  path, type, mode, link target and sha256 of every entry, `.git/` and `node_modules/` included. One guard compares
+  a tree with it at five points: the base before staging, the copy after the copy, the copy before the hunt, the
+  base after the hunt, and the copy after the hunt (the arm's own writes, kept as `repo-delta.tsv`).
+- Drift classes: `added`, `removed`, `modified(content)`, `modified(mode 644→755)`, `modified(type f→l)`,
+  `modified(target)`; an added (removed) dir whose parent was not added (removed) is one line
+  `added dir <path>/ (<n> entries)`. Paths are shown percent-encoded (a look-alike, zero-width or newline name is
+  visible), with `/` restored. A refusal lists the first 100 lines and ends with the command that prints all of them
+  (`exam.sh guard --base <b> --contest <c> --list`); a base-side refusal writes nothing into the base (only
+  `freeze`, `adopt` and `seal` write there). The one exemption: a content change of a SEALED `./.git/index` or `./.git/modules/**/index`
+  (read-only git commands rewrite them). Identity is content, mode and type, never time: an edit with the mtime
+  restored is drift, an identical rewrite is not.
+- `stage` refuses a drifted, unsealed or tampered base (exit 3, nothing staged; the drive records `rc=stage-3` for
+  that row and goes on), and a live arm whose exam root is tmpfs (each arm keeps a copy; a full `/tmp` stops every
+  session on the host). `run` refuses a copy that drifted after stage (`guard-drift.txt`) and an arm staged before
+  #2372 (re-stage it). A base that changed DURING an arm VOIDs that arm: `void.operator` reads `exam-guard
+  base-drift: <n> paths changed in the base during this arm (base-drift.txt)` (class `operator` until the driver
+  port #2375), and `stage` then refuses the next row on that base until the base is restored. A post-run guard that
+  cannot decide (no binary, a crash, the budget) VOIDs the arm too (`base_guard_after=error`). `run.meta` carries
+  `code_copy`, `code_manifest_sha256`, `base_guard_after=ok|drift:<n>|error`, `repo_delta=+<a> ~<m> -<d>|error`.
+- The legacy harnesses `deep-hunt-ab.sh`, `callee-trust-ab.sh`, `run-corpus-bench.sh`, `refute-batch-ab.sh` and
+  `generalization-bench.sh` still pass a shared tree as `--repo`; today only the colony-lint fixture self-tests start
+  them, and if a live run of one writes into a sealed base, the guard refuses the next stage on it until the base is
+  restored or re-sealed.
+- The seal is fail-closed: every difference from the git HEAD outside `node_modules/` (`git status --porcelain=v2
+  --untracked-files=all --ignored=matching`, read-only) must be named with `--accept <rel>` (an exact path relative
+  to `code/`, or a dir ending in `/`), so the contest's setup (a `foundry.toml` edit, a `lib/forge-std` pointer, a
+  lock file) is on record in `code.setup.txt` and a leftover can never be sealed in by accident. An accepted
+  submodule covers only its commit change (untracked or modified content inside it needs its own accepts); a
+  symlink that is absolute or resolves outside the tree needs an accept; renames, unmerged paths, an empty tree, a
+  non-git tree without `--no-git` and a second seal without `--force` are refused.
+
+Sealing an existing base on a host (no exam may run on it; move PoC files and build output OUT of `code/` first,
+the seal never accepts them silently):
+
+```bash
+$X/exam/exam.sh seal --base <base> --contest <id> --accept <setup path> [--accept <dir>/]...   # exit 3 lists the rest
+$X/exam/exam.sh guard --base <base> --contest <id> [--list]                                    # exit 0 = clean
+```
+
+**The `.ag` / shim boundary.** All the guard logic is one deterministic one-shot agent, `exam/exam-guard.ag`
+(`agentis go`, no prompt, emit or memo): the seal's accept rules, the compare, the drift classes, the listing and
+the refuse / VOID decisions. It reaches the filesystem only through `exec argv` shims (no shell): `find` (the walk;
+`! -regex '.*'` names an undecodable entry), `sha256sum -z` (content), `git status`/`rev-parse` (the seal),
+`cp`/`mv`/`rm` (the copy, and files across the workspace boundary), `stat` (file type, filesystem type), `realpath -m`
+(where a symlink resolves) and `pwd -P`. agentis has no directory walk, stat, file-hash or git builtin, and its
+file builtins stop at the workspace. Rust was weighed for the walk + hash (one binary instead of find + sha256sum)
+and lost: new non-`.ag` code with a build step and a toolchain in CI, for 1.6-2.6 s per pass that coreutils already
+give. `exam.sh` keeps only the launcher `guard_ag` (a throwaway workspace, `agentis init`, its config, one
+`agentis go`), the flag parsing, one `|| die 3` per call site, `run_finish`'s fail-closed fallback, two verbatim
+includes (`.stage.copy` into `stage.meta`, `.guard.meta` into `run.meta`) and the path plumbing.
+
+Cost of the shipped agent (agentis v1.32.0, one-shot `agentis go` in `heavy.slice`, btrfs; a synthetic tree of
+43,203 entries / 40,800 files, between the two real bench trees of 37,883 and 49,014 entries the design was
+prototyped on):
+
+| pass | CB | wall |
+|---|---|---|
+| seal (walk + hash + manifest write) | 1,538 | 1.4 s |
+| guard, no drift | 960 | 1.1 s |
+| guard, 38 PoC files + 1 new dir (39 lines) | 14,473 | 2.2 s |
+| guard, 101 PoC files + 1 new dir (102 lines) | 29,796 | 2.2 s |
+| guard, the same + a 1,117-entry build-output dir (103 lines) | 60,596 | 3.7 s |
+| stage copy (reflink probe + `cp -a` + the copy's guard) | 1,285 | 3.5 s (copy 1.8 s, 0 B exclusive) |
+
+The compare is flat set operations over encoded records (`sort_unique_strings` + `string_list_freq_csv`);
+per-element work runs only on drift-sized lists (about 150-300 CB per drift record), never while a tree-sized value
+is live in an enclosing scope (a lambda clones every live scope: the first prototype took 150 s for a 997-record
+drift). So 5 guard passes plus the copy cost about 10-20 s per arm, under 0.4 % of a 1.9-4.0 h breadth arm. The
+real limits are runtime resources, which the launcher raises in the throwaway workspace config (prototype
+measurements on the real trees): `limits.max_string_heap_bytes = 1073741824` (a 49,014-entry drift check needs
+about 113 MB; the default 16 MiB fails even a 37,883-entry seal), `limits.max_disk_bytes = 268435456` (the larger
+manifest is 11.8 MB; default 10 MiB) and `exec.stdout_max_bytes = 0` (the walk of the smaller tree is 2.9 MB; the
+default 1 MiB truncates, and the agent refuses any output carrying the runtime's truncation marker). `cb 5000000` is
+about 80x the largest spend measured above; exhausting it, or any other error, fails closed.
 
 **Exam root layout** (ground truth lives only in the sibling `_gt/` view, never next to anything the hunt is
 pointed at; score one arm with `generation-recall.sh --from-work <arm-dir>/_gt --id <contest>`):
@@ -733,8 +819,9 @@ pointed at; score one arm with `generation-recall.sh --from-work <arm-dir>/_gt -
 <root>/arms/<contest>/<zone>/<arm>-r<N>/          stage.meta stage.log run.meta run.log rehunt.log deep.log
                                                   attrib.tsv void.txt [void.operator] .done
                                                   run.pid (while alive) breadth.env deep.env env.cleared
+                                                  .guard.meta repo-delta.tsv [guard-drift.txt] [base-drift.txt]
 <root>/arms/<contest>/<zone>/<arm>-r<N>.void-<k>/ a VOID attempt kept by drive --retry-void
-    <contest>/{code -> base, zone-hunt-out/}      what the hunt is pointed at
+    <contest>/{code/ (private copy), zone-hunt-out/} what the hunt is pointed at (#2372)
     _gt/<contest>/{truth.tsv, judging -> base, zone-hunt-out -> ../../<contest>/zone-hunt-out}
 <root>/triage/<contest>-<arm>-r<N>.{tsv,md}
 ```

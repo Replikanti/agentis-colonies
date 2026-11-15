@@ -34,7 +34,12 @@ DASH_PID=""
 # so no two reads can straddle 00:00 UTC within a single run (#1043). Reads
 # used purely for uniqueness (e.g. %s%N sentinels) are intentionally not
 # frozen.
-SUITE_NOW="$(date '+%s')"
+# The spend fixtures sit up to 180 s before SUITE_NOW, so a suite started within 3 min after local midnight would
+# drop the older rows out of the `today` bucket even with the clock frozen (test 27): clamp SUITE_NOW to at least
+# local midnight + 600 s. One date call (epoch + local wall time), no `date -d` (BSD date has no -d).
+read -r SUITE_NOW _st_h _st_m _st_s <<< "$(date '+%s %H %M %S')"
+_st_mid=$((10#$_st_h * 3600 + 10#$_st_m * 60 + 10#$_st_s))
+[ "$_st_mid" -ge 600 ] || SUITE_NOW=$((SUITE_NOW + 600 - _st_mid))
 
 cleanup() {
     if [ -n "$DASH_PID" ]; then
