@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **tests**: `tools/test-timeline-rendering.sh` test 27 (cost block aggregations) failed whenever the suite started 5 to 179 s after local midnight, even with the clock frozen: the spend fixtures sit 60/120/180 s before the one `SUITE_NOW`, so the older rows fell out of the `today` bucket. Not a load flake. The suite now clamps `SUITE_NOW` to at least local midnight + 600 s, read in the same `date` call as the epoch (no `date -d`, so it stays BSD-safe). Found in the QA of #2372.
+
 - **dashboard**: `bin/federation-dashboard` now honours an optional `FEDERATION_DASHBOARD_EPOCH_OVERRIDE` — a **test-only** hermeticity hook that freezes the entry point's `EPOCH` (threaded to the collector, timeline and history helpers) to an injected epoch instead of re-sampling the wall clock at refresh time. Default behaviour is byte-identical (`$(date '+%s')`); production is unchanged. This extends the #1043/#1145 "single injected now" invariant to the *booted* path, eliminating the local-midnight straddle that flaked `tools/test-timeline-rendering.sh` test 27 (cost-block aggregation) under host load. ([#1685](https://github.com/Replikanti/agentis-colonies/issues/1685))
 
 ## [0.11.2] — 2026-07-07

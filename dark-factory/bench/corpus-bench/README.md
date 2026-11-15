@@ -739,8 +739,9 @@ tree was visible to every later arm on that base (and one stray PoC broke a late
 - Drift classes: `added`, `removed`, `modified(content)`, `modified(mode 644→755)`, `modified(type f→l)`,
   `modified(target)`; an added (removed) dir whose parent was not added (removed) is one line
   `added dir <path>/ (<n> entries)`. Paths are shown percent-encoded (a look-alike, zero-width or newline name is
-  visible), with `/` restored. A refusal lists the first 100 lines (`exam.sh guard --list`: all) and the full list
-  goes to a file. The one exemption: a content change of a SEALED `./.git/index` or `./.git/modules/**/index`
+  visible), with `/` restored. A refusal lists the first 100 lines and ends with the command that prints all of them
+  (`exam.sh guard --base <b> --contest <c> --list`); a base-side refusal writes nothing into the base (only
+  `freeze`, `adopt` and `seal` write there). The one exemption: a content change of a SEALED `./.git/index` or `./.git/modules/**/index`
   (read-only git commands rewrite them). Identity is content, mode and type, never time: an edit with the mtime
   restored is drift, an identical rewrite is not.
 - `stage` refuses a drifted, unsealed or tampered base (exit 3, nothing staged; the drive records `rc=stage-3` for
@@ -751,6 +752,10 @@ tree was visible to every later arm on that base (and one stray PoC broke a late
   port #2375), and `stage` then refuses the next row on that base until the base is restored. A post-run guard that
   cannot decide (no binary, a crash, the budget) VOIDs the arm too (`base_guard_after=error`). `run.meta` carries
   `code_copy`, `code_manifest_sha256`, `base_guard_after=ok|drift:<n>|error`, `repo_delta=+<a> ~<m> -<d>|error`.
+- The legacy harnesses `deep-hunt-ab.sh`, `callee-trust-ab.sh`, `run-corpus-bench.sh`, `refute-batch-ab.sh` and
+  `generalization-bench.sh` still pass a shared tree as `--repo`; today only the colony-lint fixture self-tests start
+  them, and if a live run of one writes into a sealed base, the guard refuses the next stage on it until the base is
+  restored or re-sealed.
 - The seal is fail-closed: every difference from the git HEAD outside `node_modules/` (`git status --porcelain=v2
   --untracked-files=all --ignored=matching`, read-only) must be named with `--accept <rel>` (an exact path relative
   to `code/`, or a dir ending in `/`), so the contest's setup (a `foundry.toml` edit, a `lib/forge-std` pointer, a

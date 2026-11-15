@@ -23,8 +23,8 @@
 #            with the profile's BACKEND/MODEL, refuses mechanical-fallback briefs, greps map/ + briefs/ for
 #            contamination, then writes <base>/<id>/freeze.sha256 + freeze.meta. --project-roots (#2255) maps a
 #            MULTI-PROJECT clone from its root (`auto` = map-zones.sh's own detection); --code-subdir maps one
-#            project dir. The frozen base is never written again by any other subcommand. Ends with `seal` (#2372;
-#            --accept / --no-git pass through, --force re-seals).
+#            project dir. Ends with `seal` (#2372; --accept / --no-git pass through, --force re-seals). Only freeze,
+#            adopt and seal write into a base; no other subcommand ever writes it.
 #   adopt    --base <dir> --contest <id> --legacy-sha <file> --checkout-commit <sha> --model <id>
 #            (--code-subdir <rel> | --project-roots <csv|auto>) [--force] [--deny-pattern <ERE>]...
 #            #2311: adopt a base frozen by the legacy host-only harness. Verifies every file under map/ + briefs/
@@ -43,7 +43,8 @@
 #            logic is exam-guard.ag (a one-shot agent; needs agentis >= 1.32.0 as EXAM_GUARD_AGENTIS or on PATH).
 #   guard    --base <dir> --contest <id> [--list]
 #            #2372: compares <base>/<id>/code with its seal: exit 0 clean, exit 3 on drift (every drifting path with
-#            its class, the first 100 lines; --list: all; the full list in <base>/<id>/code.drift.txt) or on any error.
+#            its class, the first 100 lines and a hint to rerun with --list; --list: all) or on any error. Writes
+#            nothing (a refusal from stage prints the same capped listing).
 #   plan     --base <dir> --contest <id> --arm <label> --repeat <n> --profile <p> --checkout <dir>
 #            [--zones <id,...> | --whole]
 #            Prints a plan TSV (`contest zone arm repeat profile checkout base`): one row per zone of the frozen
@@ -161,8 +162,8 @@
 #       _gt/<contest>/{truth.tsv, judging -> base, zone-hunt-out -> ../../<contest>/zone-hunt-out}
 #   <root>/triage/<contest>-<arm>-r<N>.{tsv,md}
 # Score one arm with `generation-recall.sh --from-work <arm-dir>/_gt --id <contest>`.
-# A frozen base: <base>/<contest>/{code/, truth.tsv, map/, briefs/, freeze.*, code.manifest, code.seal, code.setup.txt,
-# [code.drift.txt]}. A base that drifted during an arm VOIDs it with class `operator` and an `exam-guard` reason.
+# A frozen base: <base>/<contest>/{code/, truth.tsv, map/, briefs/, freeze.*, code.manifest, code.seal, code.setup.txt}.
+# A base that drifted during an arm VOIDs it with class `operator` and an `exam-guard` reason.
 #
 # Needs bash, python3, git, GNU `timeout`, setsid and /proc (Linux); bwrap for a live backend. Exit: 0 ok; 1 a self-test / kill check failed;
 # 2 usage or profile error; 3 missing prerequisite, dirty / contaminated checkout, drift, refused overwrite or a
@@ -179,7 +180,7 @@ CB_DIR="$(cd "$EXAM_DIR/.." && pwd)"
 TRIAGE="$CB_DIR/triage.py"
 ATTRIB_PY="$CB_DIR/model-attribution.py"
 PATTERNS="$EXAM_DIR/void-patterns.tsv"
-GUARD_AG="${EXAM_TEST_GUARD_AG:-$EXAM_DIR/exam-guard.ag}"   # the seam swaps in a self-test variant only
+GUARD_AG="$EXAM_DIR/exam-guard.ag"
 SAFE_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 
 # Measurement integrity for every model call this runner starts: a refusal or a model fallback is an ERROR,
@@ -300,7 +301,9 @@ file_sha() { $SHA256_CMD "$1" | cut -d' ' -f1; }
 # shim only starts the runtime, which cannot run inside itself: a throwaway workspace, its config (mock backend, the
 # env allowlist below, no stdout cap, the string-heap and disk limits a real tree needs), one `agentis go`. The
 # agent's binary is EXAM_GUARD_AGENTIS (default: agentis on PATH), separate from `--agentis` (the hunt's binary,
-# the self-test stub). G_ACCEPT / G_FORCE / G_NOGIT / G_LIST carry the seal + guard flags.
+# the self-test stub). G_ACCEPT / G_FORCE / G_NOGIT / G_LIST carry the seal + guard flags. No env var swaps the
+# agent or loosens its limits (the self-test reaches those failure modes on a patched copy of this file + the agent);
+# the one test seam, EXAM_TEST_FORCE_TMPFS, can only add a refusal.
 G_ACCEPT=(); G_FORCE=0; G_NOGIT=0; G_LIST=0
 guard_ag() {
   local mode="$1" contest="$2" cdir="$3" armdir="${4:-}" root="${5:-}" live="${6:-0}" bin ws rc
@@ -317,7 +320,7 @@ guard_ag() {
     echo "llm.backend = mock"
     echo "exec.sandbox_profile = basic"
     echo "exec.env_passthrough = EXAM_GUARD_MODE,EXAM_GUARD_CDIR,EXAM_GUARD_ARMDIR,EXAM_GUARD_CONTEST,EXAM_GUARD_ROOT,EXAM_GUARD_LIVE,EXAM_GUARD_FORCE,EXAM_GUARD_NO_GIT,EXAM_GUARD_FULL_LIST,EXAM_TEST_FORCE_TMPFS"
-    echo "exec.stdout_max_bytes = ${EXAM_TEST_GUARD_STDOUT_MAX:-0}"
+    echo "exec.stdout_max_bytes = 0"
     echo "limits.max_string_heap_bytes = 1073741824"
     echo "limits.max_disk_bytes = 268435456"
   } >> "$ws/.agentis/config"
@@ -1748,6 +1751,7 @@ cmd_self_test() {
   echo 'contract Stray {}' > "$it/test/Stray.t.sol"; echo '// edit' >> "$it/src/pool/Pool.sol"; rm -f "$it/README.md"
   chmod +x "$it/foundry.toml"; rm -f "$it/src/feed/Feed.sol"; ln -s ../pool/Pool.sol "$it/src/feed/Feed.sol"
   mkdir -p "$it/out" && echo '{}' > "$it/out/x.json"; git -C "$it" rev-parse HEAD > "$it/.git/refs/stash"
+  local ib_ls0; ib_ls0="$(cd "$ib" && find . -path ./fx/code -prune -o -print | LC_ALL=C sort)"
   bash "$SELF" stage --root "$iroot" --base "$ib" --contest fx --zone src_feed --arm drift --repeat 1 --profile mock \
     --checkout "$co" > "$work/idrift.out" 2>&1; rc=$?
   local dmiss="" dl
@@ -1756,9 +1760,10 @@ cmd_self_test() {
             'added ./.git/refs/stash'; do
     grep -qxF -- "$dl" "$work/idrift.out" || dmiss="$dmiss [$dl]"
   done
-  if [ "$rc" -eq 3 ] && [ -z "$dmiss" ] && [ ! -e "$iroot/arms/fx/src_feed/drift-r1" ] && grep -q "full list: $ic/code.drift.txt" "$work/idrift.out" \
-     && [ "$(grep -c . "$ic/code.drift.txt")" -eq 7 ]; then
-    ok "guard: stage refuses a drifted base and names all 7 drifts with their class (added, edited, deleted, chmod +x, file -> symlink, out/, .git/refs/stash); no arm dir; the refusal message carries the listing, code.drift.txt the full list"
+  if [ "$rc" -eq 3 ] && [ -z "$dmiss" ] && [ ! -e "$iroot/arms/fx/src_feed/drift-r1" ] \
+     && grep -qxF "full list: exam.sh guard --base $ib --contest fx --list" "$work/idrift.out" \
+     && [ "$(cd "$ib" && find . -path ./fx/code -prune -o -print | LC_ALL=C sort)" = "$ib_ls0" ]; then
+    ok "guard: stage refuses a drifted base and names all 7 drifts with their class (added, edited, deleted, chmod +x, file -> symlink, out/, .git/refs/stash); no arm dir; the refusal message carries the listing and the --list hint, and writes nothing into the base"
   else
     bad "guard: drifted-base refusal (exit $rc) missing:$dmiss"; sed 's/^/         | /' "$work/idrift.out" | head -14
   fi
@@ -2068,20 +2073,23 @@ cmd_self_test() {
   local lc2="$work/gb/cap/code"
   gtree cap; mkdir -p "$lc2/t" && echo s > "$lc2/t/Seed.sol"; gseal cap
   for i in $(seq -w 1 100); do echo "$i" > "$lc2/t/P$i.t.sol"; done
-  gcheck cap; local c100; c100="$(glisted | grep -c .)|$(grep -c '^\.\.\. ' "$work/gcheck.out")|$(grep -c . "$work/gb/cap/code.drift.txt")"
+  local hint="full list: exam.sh guard --base $work/gb --contest cap --list"
+  gcheck cap; local c100; c100="$(glisted | grep -c .)|$(grep -c '^\.\.\. ' "$work/gcheck.out")|$(grep -cxF "$hint" "$work/gcheck.out")"
   echo 101 > "$lc2/t/P101.t.sol"; gcheck cap
-  local c101; c101="$(glisted | grep -c .)|$(grep '^\.\.\. ' "$work/gcheck.out")|$(grep -c . "$work/gb/cap/code.drift.txt")"
+  local c101; c101="$(glisted | grep -c .)|$(grep '^\.\.\. ' "$work/gcheck.out")|$(grep -cxF "$hint" "$work/gcheck.out")"
   mkdir -p "$lc2/cache" && echo c > "$lc2/cache/c.json"; gcheck cap
   local c102; c102="$(glisted | grep -c .)|$(grep '^\.\.\. ' "$work/gcheck.out")"
-  gcheck cap --list; local cfull; cfull="$(glisted | grep -c .)"
+  gcheck cap --list; local cfull; cfull="$(glisted | grep -c .)|$(grep -c '^\.\.\. \|^full list: ' "$work/gcheck.out")"
+  local cls; cls="$(cd "$work/gb/cap" && find . -path ./code -prune -o -print | LC_ALL=C sort | paste -sd' ' -)"
   rm -rf "$lc2/t/P"* "$lc2/cache"; mkdir -p "$lc2/big/n"; for i in $(seq 1 249); do echo "$i" > "$lc2/big/B$i.sol"; done
   gcheck cap; local cbig; cbig="$(glisted | paste -sd'|' -)"
   echo n > "$lc2/big/n/N.sol"; gcheck cap; local cbig2; cbig2="$(glisted | paste -sd'|' -)"
-  if [ "$c100" = "100|0|100" ] && [ "$c101" = "100|... 1 more|101" ] && [ "$c102" = "100|... 2 more" ] && [ "$cfull" = 102 ] \
+  if [ "$c100" = "100|0|1" ] && [ "$c101" = "100|... 1 more|1" ] && [ "$c102" = "100|... 2 more" ] && [ "$cfull" = "102|0" ] \
+     && [ "$cls" = ". ./code.manifest ./code.seal ./code.setup.txt" ] \
      && [ "$cbig" = "added dir ./big/ (250 entries)" ] && [ "$cbig2" = "added dir ./big/ (251 entries)" ]; then
-    ok "guard: listing cap (100 lines: all, no 'more'; 101: 100 + '... 1 more', the file holds 101; 101 + 1 dir: '... 2 more'; --list: all 102; one added dir with 249 files + 1 subdir = one line '(250 entries)', nested entries count)"
+    ok "guard: listing cap (100 lines: all, no 'more'; 101: 100 + '... 1 more' + the --list hint; 101 + 1 dir: '... 2 more'; --list: all 102, no hint; the base holds only its seal files, no drift file; one added dir with 249 files + 1 subdir = one line '(250 entries)', nested entries count)"
   else
-    bad "guard: listing cap: 100=[$c100] 101=[$c101] 102=[$c102] full=$cfull big=[$cbig] big2=[$cbig2]"
+    bad "guard: listing cap: 100=[$c100] 101=[$c101] 102=[$c102] full=[$cfull] base=[$cls] big=[$cbig] big2=[$cbig2]"
   fi
 
   # errors fail closed: exit 3 at stage and guard, never "clean".
@@ -2103,12 +2111,28 @@ cmd_self_test() {
   sed "s/^manifest_sha256=.*/manifest_sha256=$(file_sha "$work/gb/err/code.manifest")/" "$work/err.s" > "$work/gb/err/code.seal"
   gcheck err; [ "$?" -eq 3 ] && grep -q 'malformed' "$work/gcheck.out" || emiss="$emiss lines"
   cp "$work/err.m" "$work/gb/err/code.manifest"; cp "$work/err.s" "$work/gb/err/code.seal"
-  EXAM_TEST_GUARD_STDOUT_MAX=64 gcheck err; [ "$?" -eq 3 ] && grep -q 'truncated' "$work/gcheck.out" || emiss="$emiss truncation"
-  sed 's/^cb 5000000;$/cb 300;/' "$GUARD_AG" > "$work/exam-guard-lowcb.ag"
-  EXAM_TEST_GUARD_AG="$work/exam-guard-lowcb.ag" gcheck err; [ "$?" -eq 3 ] && grep -q 'CognitiveOverload' "$work/gcheck.out" || emiss="$emiss cb"
+  # The guard's own failure modes run on a PATCHED COPY of the runner + agent ($work/pexam): the shipped launcher
+  # honours no seam that could swap or weaken the guard. Each patch is one sed expression on exam.sh or on
+  # exam-guard.ag ('-' = unchanged); a patch that changes nothing is a failed case, never a silent pass.
+  pguard() {
+    local pd="$work/pexam"
+    rm -rf "$pd" && mkdir -p "$pd" || return 98
+    if [ "$1" = - ]; then cp "$SELF" "$pd/exam.sh"; else sed "$1" "$SELF" > "$pd/exam.sh"; fi
+    if [ "$2" = - ]; then cp "$GUARD_AG" "$pd/exam-guard.ag"; else sed "$2" "$GUARD_AG" > "$pd/exam-guard.ag"; fi
+    if cmp -s "$pd/exam.sh" "$SELF" && cmp -s "$pd/exam-guard.ag" "$GUARD_AG"; then
+      echo "pguard: the patch changed nothing" > "$work/gcheck.out"; return 99
+    fi
+    bash "$pd/exam.sh" guard --base "$work/gb" --contest "$3" "${@:4}" > "$work/gcheck.out" 2>&1
+  }
+  pguard 's/^    echo "exec.stdout_max_bytes = 0"$/    echo "exec.stdout_max_bytes = 64"/' - err
+  [ "$?" -eq 3 ] && grep -q 'truncated' "$work/gcheck.out" || emiss="$emiss truncation"
+  pguard - 's/^cb 5000000;$/cb 300;/' err; [ "$?" -eq 3 ] && grep -q 'CognitiveOverload' "$work/gcheck.out" || emiss="$emiss cb"
+  # The walk-vs-content count cross-check: a hash shim that skips one regular file the walk lists.
+  pguard - 's|"-type", "f", "-exec"|"-type", "f", "!", "-name", "B.sol", "-exec"|' err
+  [ "$?" -eq 3 ] && grep -q 'the content hash lists 1 files, the walk 2 — refusing (fail closed)' "$work/gcheck.out" || emiss="$emiss walk-vs-content"
   rm -rf "$ee" && ln -s "$work/gb/err/nowhere" "$ee"; gcheck err; [ "$?" -eq 3 ] && grep -q 'cannot walk' "$work/gcheck.out" || emiss="$emiss dangling"
   if [ -z "$emiss" ]; then
-    ok "guard: errors fail closed (exit 3): an unreadable file, a manifest whose sha256 differs from code.seal, a bad header, a missing line, truncated shim output, CB exhaustion, a dangling code link"
+    ok "guard: errors fail closed (exit 3): an unreadable file, a manifest whose sha256 differs from code.seal, a bad header, a missing line, truncated shim output, CB exhaustion, a content hash one file short of the walk, a dangling code link"
   else
     bad "guard: error paths did not fail closed:$emiss"; sed 's/^/         | /' "$work/gcheck.out" | head -5
   fi

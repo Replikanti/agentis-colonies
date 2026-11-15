@@ -22,7 +22,7 @@
 #      which carry the same sentinel literals); it IMPORTS the frozen score-match.py pair rule instead of
 #      re-implementing it; the fixture tree carries no absolute home path and its decoy `.ag` files carry no
 #      GT-id token or `corpus-bench` literal (the #2231 guard scans every `.ag` under dark-factory/). The
-#      behavioural part below SKIPs cleanly (exit 0) without python3.
+#      behavioural part below SKIPs cleanly (exit 0) without python3 (except on CI, see below).
 #      Runner (M2): no pgrep/pkill anywhere in exam/ (a pattern-matching killer matches its own command line —
 #      kill-by-path reads ps + /proc instead); no absolute home path and no corpus.tsv contest id (as a word) in
 #      exam/ or fixtures/exam/; no profile value carries a path; exam.sh embeds no heredoc python and exports
@@ -43,10 +43,12 @@
 #      fail-closed path) through the REAL exam-guard.ag: the exam self-test needs an agentis binary for the guard
 #      (EXAM_GUARD_AGENTIS or PATH). Locally it SKIPs without one; on CI a missing binary is a FAIL. Source guards:
 #      no code dir is ever symlinked into an arm, every guard call site fails closed, the drive snapshot carries
-#      exam-guard.ag, and the agent stays a deterministic one-shot (no prompt / emit / memo).
+#      exam-guard.ag, the agent stays a deterministic one-shot (no prompt / emit / memo), and the launcher honours
+#      no seam that could swap or weaken the guard. On CI (GITHUB_ACTIONS=true) every missing prerequisite of the
+#      behavioural part (python3, git, GNU timeout, /proc, the guard binary) is a FAIL, never a SKIP.
 #
 # Usage:  dark-factory/demo-holdout-exam.sh
-# Exit: 0 = all assertions hold (SKIPs cleanly when python3 is absent) ; non-zero = a regression.
+# Exit: 0 = all assertions hold (SKIPs cleanly when python3 is absent, except on CI) ; non-zero = a regression.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -179,6 +181,17 @@ if [ "$(printf '%s\n' "$sites" | head -1)" = "7 1" ] && [ "$(printf '%s\n' "$sit
 else
   bad "a guard_ag call site does not fail closed (sites: $sites)"
 fi
+# The launcher honours no test seam that could swap or weaken the guard (the agent file, its CB, its stdout cap): the
+# self-test reaches those failure modes on a patched copy of exam.sh + exam-guard.ag in its own work dir. The one
+# seam left, EXAM_TEST_FORCE_TMPFS, can only add a refusal.
+seams="$(grep -noE 'EXAM_TEST_[A-Z_]+' "$EXAM/exam.sh" "$EXAM/exam-guard.ag" | grep -v ':EXAM_TEST_FORCE_TMPFS$' || true)"
+if [ -z "$seams" ] && grep -q '^GUARD_AG="$EXAM_DIR/exam-guard.ag"$' "$EXAM/exam.sh" \
+   && grep -q '^    echo "exec.stdout_max_bytes = 0"$' "$EXAM/exam.sh"; then
+  ok "the guard launcher honours no seam that swaps or weakens the guard (GUARD_AG and the stdout cap are fixed; only EXAM_TEST_FORCE_TMPFS, which adds a refusal)"
+else
+  bad "a test seam can swap or weaken the guard (GUARD_AG must be \$EXAM_DIR/exam-guard.ag, exec.stdout_max_bytes 0):"
+  printf '%s\n' "$seams" | sed "s|^$HERE/||" | head -5
+fi
 if grep -q 'cp "$SELF" "$HELPER" "$PATTERNS" "$EXAM_DIR/exam-guard.ag" ' "$EXAM/exam.sh"; then
   ok "drive's snapshot carries exam-guard.ag (a driven plan runs the guard frozen with the runner)"
 else
@@ -215,7 +228,11 @@ fi
 # 2) BEHAVIOURAL — the fixed triage table (SKIP cleanly without python3).
 # ----------------------------------------------------------------------------------------------------------
 if ! command -v python3 >/dev/null 2>&1; then
-  skip "python3 not installed — install python3 to run the triage.py self-test"
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    bad "python3 not installed on CI — the triage.py and exam.sh self-tests cannot run"
+  else
+    skip "python3 not installed — install python3 to run the triage.py self-test"
+  fi
 else
   note "running triage.py --self-test (behavioural) ..."
   st_out="$(python3 "$TRIAGE" --self-test 2>&1)"; st_rc=$?
@@ -228,9 +245,16 @@ else
   # #2372: every stage / run guard call runs exam-guard.ag through a real agentis binary (EXAM_GUARD_AGENTIS, else
   # agentis on PATH). Locally a host with no binary at all SKIPs; on CI (ci.yml installs the latest release) a
   # missing binary is a FAIL, so a broken install step cannot switch the exam cases off while CI stays green.
+  # On CI a missing prerequisite of the exam self-test is a FAIL as well (the ubuntu-26.04 runner ships uutils
+  # timeout; ci.yml swaps in GNU coreutils), so CI can never be green without running the exam cases.
   gbin="${EXAM_GUARD_AGENTIS:-$(command -v agentis 2>/dev/null || true)}"
   if ! command -v git >/dev/null 2>&1 || ! timeout --version 2>/dev/null | grep -q 'GNU coreutils' || [ ! -d /proc/self ]; then
-    skip "exam.sh self-test needs git, GNU timeout and /proc — skipped on this host"
+    pre="git: $(command -v git >/dev/null 2>&1 && echo yes || echo MISSING); timeout: $(timeout --version 2>/dev/null | head -1 || true); /proc: $([ -d /proc/self ] && echo yes || echo MISSING)"
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then
+      bad "exam.sh self-test cannot run on CI: it needs git, GNU timeout and /proc ($pre) — fix the runner setup in ci.yml"
+    else
+      skip "exam.sh self-test needs git, GNU timeout and /proc — skipped on this host ($pre)"
+    fi
   elif [ -z "$gbin" ] || [ ! -x "$gbin" ]; then
     if [ "${GITHUB_ACTIONS:-}" = true ]; then
       bad "exam.sh self-test: no agentis binary for the guard on CI (EXAM_GUARD_AGENTIS='${EXAM_GUARD_AGENTIS:-}') — the install step in ci.yml failed"

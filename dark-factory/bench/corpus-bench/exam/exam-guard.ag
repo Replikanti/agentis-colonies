@@ -280,11 +280,12 @@ fn listing_line(t: string) -> string {
     return c + " " + p;
 }
 fn full_listing(lines: list) -> string { return join_with(map(lines, |t: string| -> string { return listing_line(t); }), "\n") + "\n"; }
-// The first listing_cap() lines, then `... <n> more`, then `full list: <file>`.
-fn capped(full: string, n: int, file: string) -> string {
+// The first listing_cap() lines, then `... <n> more`, then `full list: <where>` (an arm file, or the command that
+// prints the base's full list: a base-side refusal writes nothing into the base).
+fn capped(full: string, n: int, where: string) -> string {
     let head = regex_capture("^((?:[^\\n]*\\n){0," + to_string(listing_cap()) + "})", full, 1);
     let more = if n > listing_cap() { "... " + to_string(n - listing_cap()) + " more\n"; } else { ""; };
-    return head + more + "full list: " + file;
+    return head + more + "full list: " + where;
 }
 // The tree at root against the sealed manifest. -> "CLEAN\n<stats>" | "DRIFT\n<stats>\n<n>\n<TSV lines>"
 fn guard_tree(root: string, sealed_sha: string) -> string {
@@ -456,7 +457,7 @@ fn seal_mode(cdir: string, force: string, nogit: string) -> void {
 // ---------------------------------------------------------------------------------------------------------
 // the guard modes
 // ---------------------------------------------------------------------------------------------------------
-fn check_base(cdir: string, full: string) -> void {
+fn check_base(cdir: string, contest: string, full: string) -> void {
     let root = cdir + "/code";
     let sha = load_seal(cdir);
     let g = guard_tree(root, sha);
@@ -466,12 +467,13 @@ fn check_base(cdir: string, full: string) -> void {
     }
     let n = parse_int(field(g, 2));
     let listing = full_listing(drift_lines(g));
-    let file = cdir + "/code.drift.txt";
-    put("code.drift.txt", listing, file);
-    let shown = if full == "1" { listing + "full list: " + file; } else { capped(listing, n, file); };
+    let base = if ends(cdir, "/" + contest) { substring(cdir, 0, len(cdir) - len(contest) - 1); } else { "<base>"; };
+    let shown = if full == "1" { substring(listing, 0, len(listing) - 1); } else {
+        capped(listing, n, "exam.sh guard --base " + base + " --contest " + contest + " --list");
+    };
     throw("exam-guard: the base " + root + " DRIFTED from its seal: " + to_string(n) + " listed path(s) (" + field(g, 1) + " cb_spent=" + to_string(introspect.cb_spent) + "):\n" + shown);
 }
-fn stage_check(cdir: string, root: string, live: string, force_tmpfs: string) -> void {
+fn stage_check(cdir: string, contest: string, root: string, live: string, force_tmpfs: string) -> void {
     if live == "1" {
         let fs = try { trim(exec argv ["stat", "-f", "-c", "%T", "--", root]); } catch e { "unknown"; };
         let tmpfs = if fs == "tmpfs" { true; } else { force_tmpfs == "1"; };
@@ -479,7 +481,7 @@ fn stage_check(cdir: string, root: string, live: string, force_tmpfs: string) ->
             throw("exam-guard: refusing a live arm on tmpfs (" + root + "): every arm keeps a private copy of the code tree, and a full /tmp stops every session on the host — use an exam root on disk");
         }
     }
-    check_base(cdir, "0");
+    check_base(cdir, contest, "0");
 }
 fn copy_meta(sm: string, key: string) -> string { return regex_capture("(?m)^" + key + "=(.*)$", sm, 1); }
 fn stage_copy(cdir: string, arm: string, contest: string) -> void {
@@ -604,10 +606,10 @@ if mode == "seal" {
     seal_mode(cdir, getenv("EXAM_GUARD_FORCE"), getenv("EXAM_GUARD_NO_GIT"));
 }
 if mode == "check-base" {
-    check_base(cdir, getenv("EXAM_GUARD_FULL_LIST"));
+    check_base(cdir, contest, getenv("EXAM_GUARD_FULL_LIST"));
 }
 if mode == "stage-check" {
-    stage_check(cdir, getenv("EXAM_GUARD_ROOT"), getenv("EXAM_GUARD_LIVE"), getenv("EXAM_TEST_FORCE_TMPFS"));
+    stage_check(cdir, contest, getenv("EXAM_GUARD_ROOT"), getenv("EXAM_GUARD_LIVE"), getenv("EXAM_TEST_FORCE_TMPFS"));
 }
 let arm_mode = if mode == "stage-copy" { true; } else { if mode == "pre-hunt" { true; } else { mode == "post-run"; }; };
 let base_mode = if mode == "seal" { true; } else { if mode == "check-base" { true; } else { mode == "stage-check"; }; };

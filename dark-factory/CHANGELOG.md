@@ -34,6 +34,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     `code=` now names the arm's copy. `drive`'s snapshot carries `exam-guard.ag`.
   - CI installs the latest agentis release (sha256-checked, outside PATH, as `EXAM_GUARD_AGENTIS`) so the exam
     self-test runs the real guard; on CI a missing binary fails the self-test instead of skipping it.
+  - The exam self-test now actually runs on CI. The ubuntu-26.04 runner ships uutils coreutils, so
+    `demo-holdout-exam.sh` skipped `exam.sh self-test` (no GNU `timeout`) and the check passed in about 1 s, on
+    main too. `ci.yml` switches the runner to GNU coreutils before colony-lint, and on CI every missing
+    prerequisite of the exam self-test (python3, git, GNU timeout, /proc, the guard binary) is a FAIL, never a SKIP.
+  - The launcher honours no seam that could swap or weaken the guard (no env var for the agent file, its CB or its
+    stdout cap); the self-test reaches those failure modes, and the walk-vs-content count cross-check, on a
+    patched copy of `exam.sh` + `exam-guard.ag` in its own work dir.
+  - Only `freeze`, `adopt` and `seal` write into a base. A base refusal (`stage`, `exam.sh guard`) prints the first
+    100 listed paths and the `exam.sh guard --base <b> --contest <c> --list` command for all of them.
   - Needs agentis >= 1.32.0 for the guard (`EXAM_GUARD_AGENTIS`, else `agentis` on PATH).
 
 - **Deep invariant gate on viaIR targets (#2353).** On a Foundry project with viaIR enabled every deep cell ended

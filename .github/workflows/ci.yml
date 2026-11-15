@@ -35,5 +35,16 @@ jobs:
           ./agentis --version
           echo "EXAM_GUARD_AGENTIS=$d/agentis" >> "$GITHUB_ENV"
 
+      # The ubuntu-26.04 runner ships uutils coreutils, whose `timeout` is not GNU: exam.sh refuses to run there and
+      # the held-out exam self-test (#2262, #2372) never ran on CI. Swap in GNU coreutils; demo-holdout-exam.sh
+      # FAILS on CI when a prerequisite of the exam self-test is missing, so this step cannot silently regress.
+      - name: Switch to GNU coreutils (the exam self-test needs GNU timeout)
+        run: |
+          set -eu
+          sudo apt-get install -y --allow-remove-essential coreutils-from-gnu coreutils-from-uutils-
+          v="$(timeout --version | head -1)"
+          echo "timeout --version: $v"
+          case "$v" in *"GNU coreutils"*) ;; *) echo "timeout is still not GNU coreutils" >&2; exit 1 ;; esac
+
       - name: Run colony-lint
         run: ./tools/colony-lint.sh
