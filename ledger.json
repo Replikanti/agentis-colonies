@@ -20,7 +20,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2291,
@@ -37,7 +39,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2284,
@@ -54,7 +58,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2278,
@@ -71,7 +77,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2245,
@@ -88,7 +96,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2306,
@@ -105,7 +115,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2312,
@@ -122,7 +134,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2311,
@@ -139,7 +153,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2326,
@@ -159,7 +175,9 @@
    ],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2325,
@@ -178,7 +196,9 @@
    ],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2323,
@@ -195,7 +215,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2353,
@@ -212,7 +234,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2352,
@@ -229,7 +253,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2356,
@@ -246,7 +272,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2362,
@@ -263,7 +291,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2363,
@@ -282,7 +312,9 @@
    ],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2367,
@@ -299,7 +331,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2365,
@@ -318,7 +352,9 @@
    ],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2369,
@@ -337,7 +373,9 @@
    ],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2368,
@@ -356,7 +394,9 @@
    ],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2371,
@@ -373,7 +413,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2373,
@@ -393,7 +435,9 @@
    ],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2372,
@@ -410,7 +454,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2375,
@@ -429,7 +475,9 @@
    ],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   },
   {
    "issue": 2374,
@@ -446,7 +494,9 @@
    "deps": [],
    "xdeps": [],
    "user": null,
-   "machine": null
+   "machine": null,
+   "areas": [],
+   "manual": false
   }
  ],
  "log": [
@@ -852,11 +902,11 @@
   }
  ],
  "open": [],
- "updated_at": "2026-11-20T11:55:12+00:00",
+ "updated_at": "2026-11-20T11:56:09+00:00",
  "xopen": [],
  "wip_auto": true,
  "pushers": {
-  "at": "2026-11-20T03:39:06+00:00",
+  "at": "2026-11-20T11:56:08+00:00",
   "logins": [
    "ylohnitram"
   ]
