@@ -1,0 +1,869 @@
+{
+ "repo": "agentis-colonies",
+ "gh": "Replikanti/agentis-colonies",
+ "wip_limit": 2,
+ "mirror_issue": null,
+ "created_at": "2026-10-13T16:12:14+00:00",
+ "tasks": [
+  {
+   "issue": 2294,
+   "title": "demo-claude-sandboxed.sh: SIGKILL merge-back case flakes under host load",
+   "epic": null,
+   "order": 21,
+   "state": "done",
+   "owner": null,
+   "pr": 2307,
+   "note": "",
+   "updated_at": "2026-10-16T08:03:33+00:00",
+   "priority": "P3",
+   "size": "small",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2291,
+   "title": "dark-factory: hunt pipeline does not detect Claude usage-limit replies — quota outage becomes failed cells / hunted_degraded zones",
+   "epic": null,
+   "order": 5,
+   "state": "done",
+   "owner": null,
+   "pr": 2304,
+   "note": "M2 (STAGE 4.5) implementing",
+   "updated_at": "2026-10-14T15:13:22+00:00",
+   "priority": "P1",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2284,
+   "title": "dark-factory: batch refute-gate candidates per (file, function) — same function is refuted up to 6× in separate sessions",
+   "epic": null,
+   "order": 14,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "M3 FAIL (pre-registered rule): batching stays opt-in, default OFF; M4 not done",
+   "updated_at": "2026-10-16T05:48:23+00:00",
+   "priority": "P2",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2278,
+   "title": "dark-factory: cluster-findings M2 — oku A/B held-out fixture with pre-registered expected-distinct labels",
+   "epic": null,
+   "order": 13,
+   "state": "done",
+   "owner": null,
+   "pr": 2305,
+   "note": "",
+   "updated_at": "2026-10-15T06:10:33+00:00",
+   "priority": "P2",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2245,
+   "title": "dark-factory: domain-lens iterations from held-out miss shapes — C25 empty-distribution / zero-participation edge (designed on notional M-8, measured on superfluid-locker M-2)",
+   "epic": null,
+   "order": 4,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "closed on GitHub",
+   "updated_at": "2026-10-13T20:25:09+00:00",
+   "priority": "P1",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2306,
+   "title": "feat(dark-factory): same-function cluster distinctness, re-validate on a new held-out set, then re-enable DF_CLUSTER_FINDINGS (follow-up to #2278)",
+   "epic": null,
+   "order": 22,
+   "state": "done",
+   "owner": null,
+   "pr": 2309,
+   "note": "phase A merged (PR #2308); remaining main-session: phase B held-out pool + blind labels sha256-anchored + clusterer run + spot-check; phase C flip only on passing gate",
+   "updated_at": "2026-10-17T10:39:01+00:00",
+   "priority": "P3",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2312,
+   "title": "feat(dark-factory): live contest finder covers Cantina and Code4rena, paginates Sherlock, reports per-platform fetch failures",
+   "epic": null,
+   "order": 7,
+   "state": "done",
+   "owner": null,
+   "pr": 2364,
+   "note": "PR #2364 merged 2026-11-14 00:12 CET (1532745); remaining: cron re-point to dark-factory/find-live-contests.sh + one cron-like run (expect 5 STATUS lines, ok=5), then close #2312",
+   "updated_at": "2026-11-13T23:14:46+00:00",
+   "priority": "P1",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2311,
+   "title": "dark-factory: generation-ceiling diagnostic — classify rare MISS rows on spent held-out sets as LOCATION / MECHANISM / EXECUTION",
+   "epic": null,
+   "order": 6,
+   "state": "done",
+   "owner": null,
+   "pr": 2313,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-14T13:55:42+00:00",
+   "priority": "P1",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2326,
+   "title": "feat(dark-factory): AgentArena M1 — intake fetch and unpack: run-agentarena-intake.sh (details, repo zip, caps)",
+   "epic": 2317,
+   "order": 3,
+   "state": "done",
+   "owner": null,
+   "pr": 2358,
+   "note": "",
+   "updated_at": "2026-10-21T13:09:04+00:00",
+   "priority": "P1",
+   "size": "medium",
+   "deps": [
+    2323,
+    2325
+   ],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2325,
+   "title": "feat(dark-factory): AgentArena M1 — webhook receiver: dark-factory/agentarena-webhook.py",
+   "epic": 2317,
+   "order": 2,
+   "state": "done",
+   "owner": null,
+   "pr": 2355,
+   "note": "",
+   "updated_at": "2026-10-20T13:03:45+00:00",
+   "priority": "P1",
+   "size": "medium",
+   "deps": [
+    2323
+   ],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2323,
+   "title": "task(dark-factory): AgentArena M0 — recon: AgentArena facts from the public docs and agent template",
+   "epic": 2317,
+   "order": 1,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "recon posted as comment 6269549647; closed without PR (scout RESCOPE)",
+   "updated_at": "2026-10-19T14:24:24+00:00",
+   "priority": "P1",
+   "size": "small",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2353,
+   "title": "dark-factory: deep invariant gate cannot compile viaIR targets — fixed 600 s agentis exec timeout vs ~30 min viaIR build (every cell HARNESS_ERROR)",
+   "epic": null,
+   "order": 8,
+   "state": "done",
+   "owner": null,
+   "pr": 2370,
+   "note": "",
+   "updated_at": "2026-11-14T10:28:20+00:00",
+   "priority": "P1",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2352,
+   "title": "dark-factory: slot gates fail open silently, so the operator cannot see the host-wide forge cap is off",
+   "epic": null,
+   "order": 15,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-14T12:29:33+00:00",
+   "priority": "P2",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2356,
+   "title": "fix(dark-factory): demo-callee-trust-lens part 13 live arm is nondeterministic — one LLM sample gates colony-lint",
+   "epic": null,
+   "order": 23,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-14T12:29:33+00:00",
+   "priority": "P3",
+   "size": "small",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2362,
+   "title": "fix(dark-factory): demo-deep-hunt-budget LLM slot check sees concurrency 2 under LLM_MAX_CONCURRENT=1 (red colony-lint)",
+   "epic": null,
+   "order": 9,
+   "state": "done",
+   "owner": null,
+   "pr": 2366,
+   "note": "",
+   "updated_at": "2026-11-13T21:30:45+00:00",
+   "priority": "P1",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2363,
+   "title": "refactor(dark-factory): route funnel and competition watcher through the contest finder output, retire contest-watch.sh",
+   "epic": null,
+   "order": 16,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-14T12:32:50+00:00",
+   "priority": "P2",
+   "size": "?",
+   "deps": [
+    2312
+   ],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2367,
+   "title": "fix(dark-factory): slot gates residual hardening (empty-token owner, pin coverage, guard gaps)",
+   "epic": null,
+   "order": 25,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-14T12:29:33+00:00",
+   "priority": "P3",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2365,
+   "title": "fix(dark-factory): demo stubs take concurrency locks via mkdir exit status (uutils mkdir race)",
+   "epic": null,
+   "order": 24,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-14T12:29:33+00:00",
+   "priority": "P3",
+   "size": "?",
+   "deps": [
+    2362
+   ],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2369,
+   "title": "dark-factory: viaIR builds on the PoC and autonomous-hunt invariant paths still hit the fixed 600 s exec timeout (follow-up to #2353)",
+   "epic": null,
+   "order": 18,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-14T12:32:50+00:00",
+   "priority": "P2",
+   "size": "?",
+   "deps": [
+    2353
+   ],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2368,
+   "title": "fix(dark-factory): --ground-symbols likely no-op, prover reads symbol-inventory.txt by a bare relative path",
+   "epic": null,
+   "order": 17,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-14T12:37:19+00:00",
+   "priority": "P2",
+   "size": "?",
+   "deps": [
+    2311
+   ],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2371,
+   "title": "fix(tools): colony-lint test reliability: leaked bystander process, shellcheck test vs the 300 s per-test cap, exam demo hides the failure reason",
+   "epic": null,
+   "order": 19,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-14T12:29:33+00:00",
+   "priority": "P2",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2373,
+   "title": "dark-factory: generation lever from #2311: the hunter derives the attacker's capability and preconditions per function before generating mechanisms",
+   "epic": null,
+   "order": 12,
+   "state": "done",
+   "owner": null,
+   "pr": 2378,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-17T19:53:28+00:00",
+   "priority": "P1",
+   "size": "?",
+   "deps": [
+    2372,
+    2374
+   ],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2372,
+   "title": "dark-factory bench: every arm hunts in the same writable frozen repo, so PoC tests leak between arms (isolate the repo per arm)",
+   "epic": null,
+   "order": 10,
+   "state": "done",
+   "owner": null,
+   "pr": 2376,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-15T16:57:03+00:00",
+   "priority": "P1",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2375,
+   "title": "dark-factory: port the held-out exam driver (exam.sh + exam-helper.py) to .ag, shell only as toolchain shims",
+   "epic": null,
+   "order": 20,
+   "state": "done",
+   "owner": null,
+   "pr": null,
+   "note": "closed on GitHub",
+   "updated_at": "2026-11-17T19:53:28+00:00",
+   "priority": "P2",
+   "size": "?",
+   "deps": [
+    2372
+   ],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  },
+  {
+   "issue": 2374,
+   "title": "fix(dark-factory): drop stray Foundry tests outside test/ from the deep cell copy and prebuild skip set",
+   "epic": null,
+   "order": 11,
+   "state": "done",
+   "owner": null,
+   "pr": 2377,
+   "note": "",
+   "updated_at": "2026-11-15T07:05:41+00:00",
+   "priority": "P1",
+   "size": "?",
+   "deps": [],
+   "xdeps": [],
+   "user": null,
+   "machine": null
+  }
+ ],
+ "log": [
+  {
+   "at": "2026-11-14T11:47:49+00:00",
+   "issue": 2352,
+   "from": "claimed",
+   "to": "stopped",
+   "by": "054dff66",
+   "note": "RESCOPE: #2366 (d532edf6) already reclaims empty pid stamps (_fss_dead_empty, no grace timer); only AC3 fail-open stderr line still open; issue body needs rewrite"
+  },
+  {
+   "at": "2026-11-14T11:59:44+00:00",
+   "issue": 2352,
+   "from": "stopped",
+   "to": "ready",
+   "by": "054dff66",
+   "note": "rescoped after #2366: fail-open stderr line in both slot gates + claimless empty-pid regression case"
+  },
+  {
+   "at": "2026-11-14T12:07:00+00:00",
+   "issue": 2352,
+   "from": "ready",
+   "to": "claimed",
+   "by": "7ac1c840",
+   "note": ""
+  },
+  {
+   "at": "2026-11-14T12:18:56+00:00",
+   "issue": 2352,
+   "from": "claimed",
+   "to": "stopped",
+   "by": "7ac1c840",
+   "note": "parked on-hold 2026-11-14: no effect on payable findings; root cause handled by #2366"
+  },
+  {
+   "at": "2026-11-14T12:29:33+00:00",
+   "issue": 2371,
+   "from": "ready",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-14T12:29:33+00:00",
+   "issue": 2367,
+   "from": "ready",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-14T12:29:33+00:00",
+   "issue": 2365,
+   "from": "ready",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-14T12:29:33+00:00",
+   "issue": 2356,
+   "from": "ready",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-14T12:29:33+00:00",
+   "issue": 2352,
+   "from": "stopped",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-14T12:32:50+00:00",
+   "issue": 2369,
+   "from": "ready",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-14T12:32:50+00:00",
+   "issue": 2363,
+   "from": "ready",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-14T12:32:50+00:00",
+   "issue": 2368,
+   "from": "ready",
+   "to": "blocked",
+   "by": "sync",
+   "note": null
+  },
+  {
+   "at": "2026-11-14T12:37:19+00:00",
+   "issue": 2368,
+   "from": "blocked",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-14T12:57:38+00:00",
+   "issue": 2311,
+   "from": "accepting",
+   "to": "accepting",
+   "by": "fb1a5ca0",
+   "note": "taken over from 8c3c1aa7"
+  },
+  {
+   "at": "2026-11-14T12:57:39+00:00",
+   "issue": 2311,
+   "from": "accepting",
+   "to": "accepting",
+   "by": "fb1a5ca0",
+   "note": "PRs #2313+#2314 merged; R5 (10-29) SPLIT; 11-14 human chose R5 option (b): pointed deep on the 8 rows #2353/#2370 made measurable (numa M-5..M-14, peapods M-24), Amendment 5, checkpoint after row 1, stop when the rest cannot change the lever"
+  },
+  {
+   "at": "2026-11-14T13:30:20+00:00",
+   "issue": 2311,
+   "from": "accepting",
+   "to": "accepting",
+   "by": "fb1a5ca0",
+   "note": "A5 (R5 option b) PAUSED 11-14: shared base repos hold PoC tests written by earlier arms (numa 38, peapods 20); breaks viaIR prebuild and contaminates R2 (M-1, M-3 L0r2 HITs reused own-row L2/L1 PoCs). Waiting on human decision."
+  },
+  {
+   "at": "2026-11-14T13:42:06+00:00",
+   "issue": 2311,
+   "from": "accepting",
+   "to": "accepting",
+   "by": "fb1a5ca0",
+   "note": "11-14 contamination audit posted (3/15 HIT cells VOID): corrected verdict generation SELECTED 3:7:0. A5 paused; waiting on human: close now vs deep on numa M-5/M-7/M-11 on a clean repo copy"
+  },
+  {
+   "at": "2026-11-14T13:55:42+00:00",
+   "issue": 2373,
+   "from": null,
+   "to": "ready",
+   "by": "sync",
+   "note": "added"
+  },
+  {
+   "at": "2026-11-14T13:55:42+00:00",
+   "issue": 2372,
+   "from": null,
+   "to": "ready",
+   "by": "sync",
+   "note": "added"
+  },
+  {
+   "at": "2026-11-14T13:55:42+00:00",
+   "issue": 2311,
+   "from": "accepting",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-14T13:55:42+00:00",
+   "issue": 2373,
+   "from": "ready",
+   "to": "blocked",
+   "by": "sync",
+   "note": null
+  },
+  {
+   "at": "2026-11-14T17:02:12+00:00",
+   "issue": 2372,
+   "from": "ready",
+   "to": "claimed",
+   "by": "550a8ede",
+   "note": ""
+  },
+  {
+   "at": "2026-11-14T17:33:35+00:00",
+   "issue": 2372,
+   "from": "claimed",
+   "to": "plan-review",
+   "by": "550a8ede",
+   "note": null
+  },
+  {
+   "at": "2026-11-14T18:12:57+00:00",
+   "issue": 2375,
+   "from": null,
+   "to": "ready",
+   "by": "sync",
+   "note": "added"
+  },
+  {
+   "at": "2026-11-14T18:12:57+00:00",
+   "issue": 2374,
+   "from": null,
+   "to": "ready",
+   "by": "sync",
+   "note": "added"
+  },
+  {
+   "at": "2026-11-14T18:12:57+00:00",
+   "issue": 2375,
+   "from": "ready",
+   "to": "blocked",
+   "by": "sync",
+   "note": null
+  },
+  {
+   "at": "2026-11-14T19:53:44+00:00",
+   "issue": 2372,
+   "from": "plan-review",
+   "to": "implementing",
+   "by": "550a8ede",
+   "note": null
+  },
+  {
+   "at": "2026-11-14T23:12:57+00:00",
+   "issue": 2372,
+   "from": "implementing",
+   "to": "pr-review",
+   "by": "550a8ede",
+   "note": null
+  },
+  {
+   "at": "2026-11-15T01:24:01+00:00",
+   "issue": 2372,
+   "from": "pr-review",
+   "to": "accepting",
+   "by": "550a8ede",
+   "note": "PR #2376 merged (fa0b5ab8); main session: host data step (AC 3: list, move leftovers to evidence, seal 3 bases, guard clean), then live re-measure on #2311 (AC 4+5, max 5 runs, stop rule)"
+  },
+  {
+   "at": "2026-11-15T01:33:00+00:00",
+   "issue": 2374,
+   "from": "ready",
+   "to": "claimed",
+   "by": "43bf3400",
+   "note": ""
+  },
+  {
+   "at": "2026-11-15T02:10:12+00:00",
+   "issue": 2374,
+   "from": "claimed",
+   "to": "plan-review",
+   "by": "43bf3400",
+   "note": null
+  },
+  {
+   "at": "2026-11-15T02:18:00+00:00",
+   "issue": 2374,
+   "from": "plan-review",
+   "to": "implementing",
+   "by": "43bf3400",
+   "note": null
+  },
+  {
+   "at": "2026-11-15T06:17:16+00:00",
+   "issue": 2374,
+   "from": "implementing",
+   "to": "pr-review",
+   "by": "43bf3400",
+   "note": null
+  },
+  {
+   "at": "2026-11-15T07:05:41+00:00",
+   "issue": 2374,
+   "from": "pr-review",
+   "to": "done",
+   "by": "43bf3400",
+   "note": null
+  },
+  {
+   "at": "2026-11-15T11:30:45+00:00",
+   "issue": 2372,
+   "from": "accepting",
+   "to": "accepting",
+   "by": "43bf3400",
+   "note": "taken over from 550a8ede"
+  },
+  {
+   "at": "2026-11-15T11:30:45+00:00",
+   "issue": 2372,
+   "from": "accepting",
+   "to": "accepting",
+   "by": "43bf3400",
+   "note": "PR #2376 merged (fa0b5ab8); AC 1-3 done (host step: issuecomment-6887287080); main session: live re-measure on #2311 (AC 4+5, max 5 runs, stop rule) in progress"
+  },
+  {
+   "at": "2026-11-15T13:20:43+00:00",
+   "issue": 2372,
+   "from": "accepting",
+   "to": "accepting",
+   "by": "96c1cbda",
+   "note": "taken over from 43bf3400"
+  },
+  {
+   "at": "2026-11-15T13:20:43+00:00",
+   "issue": 2372,
+   "from": "accepting",
+   "to": "accepting",
+   "by": "96c1cbda",
+   "note": "PR #2376 merged (fa0b5ab8); AC 1-3 done (host step: issuecomment-6887287080); main session: live re-measure on #2311 (AC 4+5, max 5 runs, stop rule) in progress"
+  },
+  {
+   "at": "2026-11-15T16:57:03+00:00",
+   "issue": 2372,
+   "from": "accepting",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-15T16:57:03+00:00",
+   "issue": 2373,
+   "from": "blocked",
+   "to": "ready",
+   "by": "sync",
+   "note": null
+  },
+  {
+   "at": "2026-11-15T16:57:03+00:00",
+   "issue": 2375,
+   "from": "blocked",
+   "to": "ready",
+   "by": "sync",
+   "note": null
+  },
+  {
+   "at": "2026-11-15T18:02:30+00:00",
+   "issue": 2373,
+   "from": "ready",
+   "to": "claimed",
+   "by": "17bfa78e",
+   "note": ""
+  },
+  {
+   "at": "2026-11-15T18:21:27+00:00",
+   "issue": 2373,
+   "from": "claimed",
+   "to": "plan-review",
+   "by": "17bfa78e",
+   "note": "STOP 1: plan issuecomment-6899002653; my review: held-out oku is spent (#2311 inventory), pricing ~10x low; awaiting operator"
+  },
+  {
+   "at": "2026-11-15T20:04:14+00:00",
+   "issue": 2373,
+   "from": "plan-review",
+   "to": "implementing",
+   "by": "17bfa78e",
+   "note": "PR1 (knob + step + tests); dev/held-out runs after merge"
+  },
+  {
+   "at": "2026-11-15T21:56:31+00:00",
+   "issue": 2373,
+   "from": "implementing",
+   "to": "pr-review",
+   "by": "17bfa78e",
+   "note": null
+  },
+  {
+   "at": "2026-11-15T22:27:58+00:00",
+   "issue": 2373,
+   "from": "pr-review",
+   "to": "accepting",
+   "by": "17bfa78e",
+   "note": "PR #2378 merged e020d57c; dev measurement (sequential, 80 h cap) next, held-out burve needs operator OK"
+  },
+  {
+   "at": "2026-11-15T22:41:16+00:00",
+   "issue": 2373,
+   "from": "accepting",
+   "to": "accepting",
+   "by": "17bfa78e",
+   "note": "dev ON r1 running since 11-15 23:33 (units acc2373-*); handoff ~/df-work/ladder-2311/acc2373/HANDOFF.md; status issuecomment-6902557549"
+  },
+  {
+   "at": "2026-11-16T19:08:27+00:00",
+   "issue": 2373,
+   "from": "accepting",
+   "to": "accepting",
+   "by": "17bfa78e",
+   "note": "dev measurement: ON r1 = 1/7 (M-22 HIT, confirmed). ON r2 (6 rows) running since 16.11. 20:07 as unit acc2373-on-r2; status comment issuecomment-6902557549; state in ~/df-work/ladder-2311/acc2373/HANDOFF.md"
+  },
+  {
+   "at": "2026-11-17T19:53:28+00:00",
+   "issue": 2375,
+   "from": "ready",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  },
+  {
+   "at": "2026-11-17T19:53:28+00:00",
+   "issue": 2373,
+   "from": "accepting",
+   "to": "done",
+   "by": "sync",
+   "note": "closed on GitHub"
+  }
+ ],
+ "open": [],
+ "updated_at": "2026-11-20T11:55:12+00:00",
+ "xopen": [],
+ "wip_auto": true,
+ "pushers": {
+  "at": "2026-11-20T03:39:06+00:00",
+  "logins": [
+   "ylohnitram"
+  ]
+ },
+ "shared": true,
+ "visibility": {
+  "at": 1795175712,
+  "private": false
+ }
+}
